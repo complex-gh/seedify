@@ -1,0 +1,11 @@
+name: Lint (Soft)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  lint-soft:
+    uses: charmbracelet/meta/.github/workflows/lint-soft@main

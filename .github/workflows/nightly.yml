@@ -1,0 +1,10 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight UTC
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    uses: charmbracelet/meta/.github/workflows/nightly@main

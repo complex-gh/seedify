@@ -1,0 +1,13 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    uses: charmbracelet/meta/.github/workflows/build@main
+    with:
+      go-version: '1.25'
