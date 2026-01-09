@@ -49,6 +49,8 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 //
 // The word count is prepended to the entropy to ensure different word counts
 // generate completely different words, not just truncated versions of the same phrase.
+// Exception: For 24 words (when brave is false), the raw seed is used directly
+// without prepending word count or hashing.
 //
 // If brave is true, the hash of "brave" is prepended to the entropy (similar to
 // word count) to generate a different set of words.
@@ -72,6 +74,17 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	} else {
 		combinedSeed = make([]byte, len(fullSeed))
 		copy(combinedSeed, fullSeed)
+	}
+
+	// Special handling for 24 words: use raw seed directly
+	// Skip word count prefix and hashing to ensure compatibility
+	if wordCount == 24 && !brave {
+		// Use the combined seed directly as entropy (32 bytes for 24 words)
+		words, err := bip39.NewMnemonic(combinedSeed)
+		if err != nil {
+			return "", fmt.Errorf("could not create a mnemonic set of words: %w", err)
+		}
+		return words, nil
 	}
 
 	// Prepend word count to the seed to ensure different word counts generate
