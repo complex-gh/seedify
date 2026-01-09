@@ -21,7 +21,7 @@ func TestToMnemonicWithLength_Polyseed(t *testing.T) {
 	is.NoErr(err)
 
 	// Test 16-word polyseed format
-	mnemonic, err := ToMnemonicWithLength(&key, 16, "")
+	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false)
 	is.NoErr(err)
 	is.True(mnemonic != "")
 
@@ -40,10 +40,10 @@ func TestToMnemonicWithLength_AllFormats(t *testing.T) {
 
 	validCounts := []int{12, 15, 16, 18, 21, 24}
 
-	for _, count := range validCounts {
+		for _, count := range validCounts {
 		t.Run(string(rune(count)), func(t *testing.T) {
 			is := is.New(t)
-			mnemonic, err := ToMnemonicWithLength(&key, count, "")
+			mnemonic, err := ToMnemonicWithLength(&key, count, "", false)
 			is.NoErr(err)
 			is.True(mnemonic != "")
 
@@ -66,7 +66,7 @@ func TestToMnemonicWithLength_InvalidWordCount(t *testing.T) {
 	for _, count := range invalidCounts {
 		t.Run(string(rune(count)), func(t *testing.T) {
 			is := is.New(t)
-			_, err := ToMnemonicWithLength(&key, count, "")
+			_, err := ToMnemonicWithLength(&key, count, "", false)
 			is.True(err != nil)
 		})
 	}
@@ -82,13 +82,13 @@ func TestToMnemonicWithLength_Deterministic(t *testing.T) {
 	is.NoErr(err)
 
 	// Generate multiple times with same parameters
-	mnemonic1, err := ToMnemonicWithLength(&key, 16, "test-passphrase")
+	mnemonic1, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
 	is.NoErr(err)
 
-	mnemonic2, err := ToMnemonicWithLength(&key, 16, "test-passphrase")
+	mnemonic2, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
 	is.NoErr(err)
 
-	mnemonic3, err := ToMnemonicWithLength(&key, 16, "test-passphrase")
+	mnemonic3, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
 	is.NoErr(err)
 
 	// All should be identical
@@ -109,19 +109,19 @@ func TestToMnemonicWithLength_DifferentInputsProduceDifferentResults(t *testing.
 	is.NoErr(err)
 
 	// Same word count, different keys should produce different results
-	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "")
+	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "", false)
 	is.NoErr(err)
 
-	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "")
+	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "", false)
 	is.NoErr(err)
 
 	is.True(mnemonic1 != mnemonic2)
 
 	// Same key, different passphrases should produce different results
-	mnemonic3, err := ToMnemonicWithLength(&key1, 16, "passphrase1")
+	mnemonic3, err := ToMnemonicWithLength(&key1, 16, "passphrase1", false)
 	is.NoErr(err)
 
-	mnemonic4, err := ToMnemonicWithLength(&key1, 16, "passphrase2")
+	mnemonic4, err := ToMnemonicWithLength(&key1, 16, "passphrase2", false)
 	is.NoErr(err)
 
 	is.True(mnemonic3 != mnemonic4)

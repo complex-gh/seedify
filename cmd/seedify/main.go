@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/complex-gh/seedify"
@@ -46,6 +47,7 @@ var (
 	raw      bool
 	all      bool
 	seedPassphrase string
+	brave    bool
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify",
@@ -60,6 +62,8 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
   seedify ~/.ssh/id_ed25519 --words 16
   seedify ~/.ssh/id_ed25519 --all
   seedify ~/.ssh/id_ed25519 --words 12 --seed-passphrase "my-passphrase"
+  seedify ~/.ssh/id_ed25519 --brave
+  seedify ~/.ssh/id_ed25519 --all --brave
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -75,11 +79,44 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 
 			// Handle --all flag
 			if all {
-				err := generateAllSeedPhrases(keyPath, raw, seedPassphrase)
+				err := generateAllSeedPhrases(keyPath, raw, seedPassphrase, brave)
 				if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 					return formatPasswordError(err)
 				}
 				return err
+			}
+
+			// Handle --brave flag: generate 25-word phrase with Brave Sync
+			if brave {
+				mnemonic, err := generateBraveSyncPhrase(keyPath, seedPassphrase)
+				if err != nil {
+					if strings.Contains(err.Error(), "key is not password-protected") {
+						return formatPasswordError(err)
+					}
+					return err
+				}
+
+				if raw {
+					fmt.Println(mnemonic)
+					return nil
+				}
+
+				if isatty.IsTerminal(os.Stdout.Fd()) {
+					b := strings.Builder{}
+					w := getWidth(maxWidth)
+
+					b.WriteRune('\n')
+					renderBlock(&b, baseStyle, w, "Generated 25-word seed phrase (with Brave Sync):")
+					renderBlock(&b, mnemonicStyle, w, mnemonic)
+					b.WriteRune('\n')
+					renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
+					b.WriteRune('\n')
+
+					fmt.Println(b.String())
+				} else {
+					fmt.Println(mnemonic)
+				}
+				return nil
 			}
 
 			// Show warning for 16 words (polyseed format) unless --raw is used
@@ -87,7 +124,7 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 				_, _ = fmt.Fprintf(os.Stderr, "Warning: 16 words will be in Polyseed format (not BIP39). Use --raw to suppress this message.\n")
 			}
 
-			mnemonic, err := generateSeedPhrase(keyPath, nil, wordCount, seedPassphrase)
+			mnemonic, err := generateSeedPhrase(keyPath, nil, wordCount, seedPassphrase, brave)
 			if err != nil {
 				if strings.Contains(err.Error(), "key is not password-protected") {
 					return formatPasswordError(err)
@@ -138,6 +175,72 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 			return nil
 		},
 	}
+
+	braveSync25thCmd = &cobra.Command{
+		Use:   "brave-sync-25th",
+		Short: "Get the 25th word for Brave Sync (changes daily)",
+		Long: `Get the 25th word for Brave Sync based on the current date.
+
+The 25th word changes daily and is calculated from the epoch date
+"Tue, 10 May 2022 00:00:00 GMT". The number of days since the epoch
+is used as an index into the BIP39 English word list.
+
+This replicates the logic from:
+https://alexeybarabash.github.io/25th-brave-sync-word/
+
+Warning: Brave does not officially support using the Sync code as a backup
+and you should not rely on this continuing to work in the future. Use the
+export functionality in bookmarks and the password manager instead.`,
+		Example: `  seedify brave-sync-25th
+  seedify brave-sync-25th --date "2024-01-15"
+  seedify brave-sync-25th --raw`,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			var word string
+			var err error
+
+			// Check if a specific date was provided
+			if dateStr != "" {
+				date, parseErr := time.Parse("2006-01-02", dateStr)
+				if parseErr != nil {
+					return fmt.Errorf("could not parse date %q: use format YYYY-MM-DD: %w", dateStr, parseErr)
+				}
+				word, err = seedify.BraveSync25thWordForDate(date)
+			} else {
+				word, err = seedify.BraveSync25thWord()
+			}
+
+			if err != nil {
+				return err
+			}
+
+			if raw {
+				fmt.Println(word)
+				return nil
+			}
+
+			if isatty.IsTerminal(os.Stdout.Fd()) {
+				b := strings.Builder{}
+				w := getWidth(maxWidth)
+
+				b.WriteRune('\n')
+				renderBlock(&b, baseStyle, w, "The 25th word for Brave Sync is:")
+				renderBlock(&b, mnemonicStyle, w, word)
+				b.WriteRune('\n')
+				renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
+				b.WriteRune('\n')
+
+				fmt.Println(b.String())
+			} else {
+				fmt.Println(word)
+			}
+
+			return nil
+		},
+	}
+
+	dateStr string
 )
 
 func init() {
@@ -146,7 +249,11 @@ func init() {
 	rootCmd.PersistentFlags().IntVarP(&wordCount, "words", "w", 24, "Number of words in the phrase (12, 15, 16, 18, 21, or 24)")
 	rootCmd.PersistentFlags().BoolVar(&all, "all", false, "Generate seed phrases for all word counts (12, 15, 16, 18, 21, 24)")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
+	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync (prepends hash of 'brave' to entropy and appends 25th word)")
 	rootCmd.AddCommand(manCmd)
+	rootCmd.AddCommand(braveSync25thCmd)
+	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
+	braveSync25thCmd.Flags().BoolVar(&raw, "raw", false, "Print raw word only")
 }
 
 func main() {
@@ -180,9 +287,53 @@ func parsePrivateKey(bts, pass []byte) (interface{}, error) {
 	return ssh.ParseRawPrivateKeyWithPassphrase(bts, pass)
 }
 
+// generateBraveSyncPhrase generates a 25-word seed phrase with Brave Sync.
+// seedPassphrase is combined with the SSH key seed to add additional entropy.
+func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error) {
+	f, err := openFileOrStdin(path)
+	if err != nil {
+		return "", fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("could not read key: %w", err)
+	}
+
+	// Check if key is password-protected (required for this command)
+	if isProtected, err := isKeyPasswordProtected(bts); err == nil && !isProtected {
+		return "", fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		// Key requires a password - ask for it and parse again with the same bytes
+		pass, err := askKeyPassphrase(path)
+		if err != nil {
+			return "", err
+		}
+		// Parse again with the password using the bytes we already have
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return "", fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("could not parse key: %w", err)
+	}
+
+	switch key := key.(type) {
+	case *ed25519.PrivateKey:
+		// Generate 25-word mnemonic with Brave Sync
+		return seedify.ToMnemonicWithBraveSync(key, seedPassphrase)
+	default:
+		return "", fmt.Errorf("unknown key type: %v", key)
+	}
+}
+
 // generateSeedPhrase generates a seed phrase from an SSH key.
 // seedPassphrase is combined with the SSH key seed to add additional entropy.
-func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase string) (string, error) {
+// brave flag determines if the "brave" hash prefix should be prepended.
+func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase string, brave bool) (string, error) {
 	// Validate word count
 	validCounts := map[int]bool{12: true, 15: true, 16: true, 18: true, 21: true, 24: true}
 	if !validCounts[wordCount] {
@@ -231,7 +382,7 @@ func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase 
 	switch key := key.(type) {
 	case *ed25519.PrivateKey:
 		// Generate mnemonic with the specified word count and seed passphrase
-		return seedify.ToMnemonicWithLength(key, wordCount, seedPassphrase)
+		return seedify.ToMnemonicWithLength(key, wordCount, seedPassphrase, brave)
 	default:
 		return "", fmt.Errorf("unknown key type: %v", key)
 	}
@@ -239,12 +390,14 @@ func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase 
 
 // generateAllSeedPhrases generates seed phrases for all word counts and formats them nicely.
 // seedPassphrase is combined with the SSH key seed to add additional entropy.
-func generateAllSeedPhrases(path string, rawOutput bool, seedPassphrase string) error {
-	return generateAllSeedPhrasesWithPass(path, rawOutput, seedPassphrase, nil)
+// If brave is true, also generates a 25-word phrase with Brave Sync.
+func generateAllSeedPhrases(path string, rawOutput bool, seedPassphrase string, brave bool) error {
+	return generateAllSeedPhrasesWithPass(path, rawOutput, seedPassphrase, nil, brave)
 }
 
 // generateAllSeedPhrasesWithPass is the internal implementation that handles password-protected keys.
-func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase string, pass []byte) error {
+// If brave is true, also generates a 25-word phrase with Brave Sync.
+func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase string, pass []byte, brave bool) error {
 	// All valid word counts in order
 	wordCounts := []int{12, 15, 16, 18, 21, 24}
 
@@ -296,11 +449,21 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 	// Generate all mnemonics
 	mnemonics := make(map[int]string)
 	for _, count := range wordCounts {
-		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase)
+		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false)
 		if err != nil {
 			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, err)
 		}
 		mnemonics[count] = mnemonic
+	}
+
+	// Generate Brave Sync 25-word phrase if requested
+	var braveMnemonic string
+	if brave {
+		var err error
+		braveMnemonic, err = seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+		if err != nil {
+			return fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
+		}
 	}
 
 	// Output formatting
@@ -314,10 +477,18 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 				fmt.Println()
 			}
 		}
+		// Add Brave Sync phrase if requested
+		if brave {
+			if len(wordCounts) > 0 {
+				fmt.Println()
+			}
+			fmt.Println("25 words (Brave Sync):")
+			fmt.Println(braveMnemonic)
+		}
 		return nil
 	}
 
-	if isatty.IsTerminal(os.Stdout.Fd()) {
+		if isatty.IsTerminal(os.Stdout.Fd()) {
 		// Formatted output for terminal
 		b := strings.Builder{}
 		w := getWidth(maxWidth)
@@ -340,6 +511,16 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 			b.WriteRune('\n')
 		}
 
+		// Add Brave Sync phrase if requested (below the 24 words section)
+		if brave {
+			b.WriteRune('\n')
+			renderBlock(&b, baseStyle, w, "25 words (Brave Sync):")
+			renderBlock(&b, mnemonicStyle, w, braveMnemonic)
+			b.WriteRune('\n')
+			renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
+			b.WriteRune('\n')
+		}
+
 		fmt.Println(b.String())
 	} else {
 		// Non-terminal output: structured format
@@ -351,6 +532,10 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 				formatNote = " (BIP39)"
 			}
 			fmt.Printf("%d words%s: %s\n", count, formatNote, mnemonics[count])
+		}
+		// Add Brave Sync phrase if requested
+		if brave {
+			fmt.Printf("25 words (Brave Sync): %s\n", braveMnemonic)
 		}
 	}
 

@@ -15,9 +15,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"time"
 
 	polyseed "github.com/complex-gh/polyseed_go"
 	"github.com/tyler-smith/go-bip39"
+	"github.com/tyler-smith/go-bip39/wordlists"
 )
 
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create
@@ -47,6 +50,9 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 // The word count is prepended to the entropy to ensure different word counts
 // generate completely different words, not just truncated versions of the same phrase.
 //
+// If brave is true, the hash of "brave" is prepended to the entropy (similar to
+// word count) to generate a different set of words.
+//
 // Valid word counts are: 12, 15, 16, 18, 21, or 24.
 // The entropy size is determined by the word count:
 //   - 12 words = 128 bits (16 bytes) - BIP39
@@ -55,7 +61,7 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 //   - 18 words = 192 bits (24 bytes) - BIP39
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
-func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase string) (string, error) {
+func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, brave bool) (string, error) {
 	// Get the full seed (32 bytes)
 	fullSeed := key.Seed()
 
@@ -74,10 +80,24 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	wordCountBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(wordCountBytes, uint16(wordCount))
 
-	// Combine word count with the seed
-	prefixedSeed := make([]byte, len(wordCountBytes)+len(combinedSeed))
-	copy(prefixedSeed, wordCountBytes)
-	copy(prefixedSeed[len(wordCountBytes):], combinedSeed)
+	// If brave flag is set, prepend the hash of "brave" (similar to word count)
+	var prefixBytes []byte
+	if brave {
+		// Hash "brave" and take the first 2 bytes (same size as word count)
+		braveHash := sha256.Sum256([]byte("brave"))
+		bravePrefix := braveHash[:2]
+		// Combine brave prefix with word count prefix
+		prefixBytes = make([]byte, len(bravePrefix)+len(wordCountBytes))
+		copy(prefixBytes, bravePrefix)
+		copy(prefixBytes[len(bravePrefix):], wordCountBytes)
+	} else {
+		prefixBytes = wordCountBytes
+	}
+
+	// Combine prefix with the seed
+	prefixedSeed := make([]byte, len(prefixBytes)+len(combinedSeed))
+	copy(prefixedSeed, prefixBytes)
+	copy(prefixedSeed[len(prefixBytes):], combinedSeed)
 
 	// Special handling for 16 words - use polyseed format
 	if wordCount == 16 {
@@ -131,4 +151,87 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	}
 
 	return words, nil
+}
+
+// BraveSync25thWord returns the 25th word for Brave Sync based on the current date.
+// The 25th word changes daily and is calculated from the epoch date
+// "Tue, 10 May 2022 00:00:00 GMT". The number of days since the epoch is used
+// as an index into the BIP39 English word list.
+//
+// This function replicates the logic from the JavaScript implementation at
+// https://alexeybarabash.github.io/25th-brave-sync-word/
+//
+// Returns an error if the current date is before the epoch date or if the
+// calculated index is out of bounds for the BIP39 word list.
+func BraveSync25thWord() (string, error) {
+	return BraveSync25thWordForDate(time.Now().UTC())
+}
+
+// BraveSync25thWordForDate returns the 25th word for Brave Sync for a specific date.
+// This allows you to get the 25th word for any date, not just today.
+//
+// The date parameter should be in UTC. The number of days since the epoch
+// "Tue, 10 May 2022 00:00:00 GMT" is used as an index into the BIP39 English word list.
+//
+// Returns an error if the provided date is before the epoch date or if the
+// calculated index is out of bounds for the BIP39 word list.
+func BraveSync25thWordForDate(date time.Time) (string, error) {
+	// Parse the epoch date: "Tue, 10 May 2022 00:00:00 GMT"
+	// Using RFC1123 format which matches the JavaScript Date string format
+	epochDate, err := time.Parse(time.RFC1123, "Tue, 10 May 2022 00:00:00 GMT")
+	if err != nil {
+		return "", fmt.Errorf("could not parse epoch date: %w", err)
+	}
+
+	// Ensure we're working in UTC
+	epochDate = epochDate.UTC()
+	dateUTC := date.UTC()
+
+	// Calculate the difference in milliseconds, then convert to days
+	deltaInMsec := dateUTC.Sub(epochDate).Milliseconds()
+	deltaInDays := float64(deltaInMsec) / (24 * 60 * 60 * 1000)
+	// Round to nearest integer to match JavaScript Math.round() behavior
+	deltaInDaysRounded := int64(math.Round(deltaInDays))
+
+	// Check if date is before epoch
+	if deltaInDaysRounded < 0 {
+		return "", fmt.Errorf("date %s is before the epoch date %s", dateUTC.Format(time.RFC1123), epochDate.Format(time.RFC1123))
+	}
+
+	// Get the BIP39 English word list
+	wordList := wordlists.English
+	if wordList == nil {
+		return "", fmt.Errorf("BIP39 English word list is not available")
+	}
+
+	// Check bounds - BIP39 word list has 2048 words (indices 0-2047)
+	if deltaInDaysRounded >= int64(len(wordList)) {
+		return "", fmt.Errorf("calculated index %d is out of bounds for BIP39 word list (max index: %d)", deltaInDaysRounded, len(wordList)-1)
+	}
+
+	// Return the word at the calculated index
+	return wordList[deltaInDaysRounded], nil
+}
+
+// ToMnemonicWithBraveSync generates a 24-word mnemonic with the "brave" prefix
+// and appends the 25th word from Brave Sync. This creates a 25-word phrase
+// suitable for use with Brave Sync.
+//
+// The function generates 24 words using the same logic as ToMnemonicWithLength
+// with the brave flag set, then appends the current day's 25th word from Brave Sync.
+func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (string, error) {
+	// Generate 24 words with brave flag set
+	mnemonic24, err := ToMnemonicWithLength(key, 24, seedPassphrase, true)
+	if err != nil {
+		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+
+	// Get the 25th word for today
+	word25, err := BraveSync25thWord()
+	if err != nil {
+		return "", fmt.Errorf("could not get 25th word: %w", err)
+	}
+
+	// Append the 25th word to the 24-word phrase
+	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
 }
