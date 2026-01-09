@@ -390,13 +390,11 @@ func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase 
 
 // generateAllSeedPhrases generates seed phrases for all word counts and formats them nicely.
 // seedPassphrase is combined with the SSH key seed to add additional entropy.
-// If brave is true, also generates a 25-word phrase with Brave Sync.
 func generateAllSeedPhrases(path string, rawOutput bool, seedPassphrase string, brave bool) error {
 	return generateAllSeedPhrasesWithPass(path, rawOutput, seedPassphrase, nil, brave)
 }
 
 // generateAllSeedPhrasesWithPass is the internal implementation that handles password-protected keys.
-// If brave is true, also generates a 25-word phrase with Brave Sync.
 func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase string, pass []byte, brave bool) error {
 	// All valid word counts in order
 	wordCounts := []int{12, 15, 16, 18, 21, 24}
@@ -455,15 +453,9 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 		}
 		mnemonics[count] = mnemonic
 	}
-
-	// Generate Brave Sync 25-word phrase if requested
-	var braveMnemonic string
-	if brave {
-		var err error
-		braveMnemonic, err = seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
-		if err != nil {
-			return fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
-		}
+	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+	if err != nil {
+		return fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
 	}
 
 	// Output formatting
@@ -477,14 +469,12 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 				fmt.Println()
 			}
 		}
-		// Add Brave Sync phrase if requested
-		if brave {
-			if len(wordCounts) > 0 {
-				fmt.Println()
-			}
-			fmt.Println("25 words (Brave Sync):")
-			fmt.Println(braveMnemonic)
+		// Add Brave Sync phrase (below the 24 words section)
+		if len(wordCounts) > 0 {
+			fmt.Println()
 		}
+		fmt.Println("25 words (Brave Sync):")
+		fmt.Println(braveMnemonic)
 		return nil
 	}
 
@@ -511,15 +501,13 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 			b.WriteRune('\n')
 		}
 
-		// Add Brave Sync phrase if requested (below the 24 words section)
-		if brave {
-			b.WriteRune('\n')
-			renderBlock(&b, baseStyle, w, "25 words (Brave Sync):")
-			renderBlock(&b, mnemonicStyle, w, braveMnemonic)
-			b.WriteRune('\n')
-			renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
-			b.WriteRune('\n')
-		}
+		// Add Brave Sync phrase (below the 24 words section)
+		b.WriteRune('\n')
+		renderBlock(&b, baseStyle, w, "25 words (Brave Sync):")
+		renderBlock(&b, mnemonicStyle, w, braveMnemonic)
+		b.WriteRune('\n')
+		renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
+		b.WriteRune('\n')
 
 		fmt.Println(b.String())
 	} else {
@@ -533,10 +521,8 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 			}
 			fmt.Printf("%d words%s: %s\n", count, formatNote, mnemonics[count])
 		}
-		// Add Brave Sync phrase if requested
-		if brave {
-			fmt.Printf("25 words (Brave Sync): %s\n", braveMnemonic)
-		}
+		// Add Brave Sync phrase (below the 24 words section)
+		fmt.Printf("25 words (Brave Sync): %s\n", braveMnemonic)
 	}
 
 	return nil
