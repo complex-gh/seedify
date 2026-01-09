@@ -1,3 +1,5 @@
+version: 2
+
 run:
   tests: false
 
@@ -15,7 +17,6 @@ issues:
 linters:
   enable:
     - bodyclose
-    - goimports
     - gosec
     - nilerr
     - predeclared
@@ -26,3 +27,7 @@ linters:
     - unconvert
     - unparam
     - whitespace
+
+formatters:
+  enable:
+    - goimports

@@ -1,13 +1,115 @@
-includes:
-  - from_url:
-      url: charmbracelet/meta/main/goreleaser-full.yaml
+# GoReleaser configuration for seedify
+# See https://goreleaser.com for documentation
 
-variables:
-  main: "./cmd/seedify"
-  description: "Create seed phrases deterministically from SSH keys"
-  github_url: "https://github.com/complex-gh/seedify"
-  maintainer: "Carlos A Becker <carlos@charm.sh>"
-  brew_commit_author_name: "Carlos A Becker"
-  brew_commit_author_email: "carlos@charm.sh"
+version: 2
 
+project_name: seedify
 
+builds:
+  - id: seedify
+    main: ./cmd/seedify
+    binary: seedify
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+
+snapshots:
+  name_template: '{{ .Tag }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: complex-gh
+    name: seedify
+  mode: replace
+  header: |
+    ## {{ .ProjectName }} {{ .Tag }}
+    
+    {{ .ReleaseNotes }}
+  footer: |
+    ---
+    
+    **Full Changelog**: https://github.com/complex-gh/seedify/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+nfpms:
+  - id: seedify
+    package_name: seedify
+    file_name_template: '{{ .ConventionalFileName }}'
+    maintainer: complex@ft.hn
+    description: Create seed phrases deterministically from SSH keys
+    homepage: https://github.com/complex-gh/seedify
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+    contents:
+      - src: dist/seedify-linux-amd64/seedify
+        dst: /usr/local/bin/seedify
+        file_info:
+          mode: 0755
+      - src: dist/seedify-linux-arm64/seedify
+        dst: /usr/local/bin/seedify
+        file_info:
+          mode: 0755
+
+dockers:
+  - goos: linux
+    goarch: amd64
+    image_templates:
+      - 'ghcr.io/complex-gh/seedify:{{ .Tag }}'
+      - 'ghcr.io/complex-gh/seedify:latest'
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - '--platform=linux/amd64'
+    extra_files:
+      - dist/seedify-linux-amd64/seedify
+
+  - goos: linux
+    goarch: arm64
+    image_templates:
+      - 'ghcr.io/complex-gh/seedify:{{ .Tag }}-arm64'
+      - 'ghcr.io/complex-gh/seedify:latest-arm64'
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - '--platform=linux/arm64'
+    extra_files:
+      - dist/seedify-linux-arm64/seedify
