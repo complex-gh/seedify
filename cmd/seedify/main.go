@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -262,6 +263,71 @@ func main() {
 	}
 }
 
+// getDefaultSSHDir returns the default SSH directory for the current platform.
+// On Unix-like systems (Linux, macOS), this is ~/.ssh/
+// On Windows, this is %USERPROFILE%\.ssh\
+func getDefaultSSHDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not get home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".ssh"), nil
+}
+
+// resolveKeyPath attempts to resolve a key path. If the path doesn't exist
+// and appears to be just a filename (no directory separators), it will check
+// the default SSH directory for a key with that name.
+func resolveKeyPath(path string) (string, error) {
+	// If path is "-", use it as-is
+	if path == "-" {
+		return path, nil
+	}
+
+	// Check if the path exists as-is
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+
+	// Check if path is just a filename (no directory separators)
+	// Clean the path first to normalize it, then check if the directory
+	// component is "." (current directory) or empty
+	cleanedPath := filepath.Clean(path)
+	dir := filepath.Dir(cleanedPath)
+	
+	// If the directory is not "." or empty, it's a path with directory components
+	// - don't check default SSH directory
+	if dir != "." && dir != "" {
+		return "", fmt.Errorf("could not open %s: %w", path, os.ErrNotExist)
+	}
+	
+	// Also check if the original path explicitly starts with relative path indicators
+	// These are relative paths that should not be checked in default SSH directory
+	// Check for both Unix-style (./, ../) and Windows-style (.\, ..\) prefixes
+	pathLower := strings.ToLower(path)
+	if strings.HasPrefix(pathLower, "./") || strings.HasPrefix(pathLower, "../") ||
+		strings.HasPrefix(pathLower, ".\\") || strings.HasPrefix(pathLower, "..\\") {
+		return "", fmt.Errorf("could not open %s: %w", path, os.ErrNotExist)
+	}
+
+	// Path appears to be just a filename, try default SSH directory
+	sshDir, err := getDefaultSSHDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine SSH directory: %w", err)
+	}
+
+	// Use the cleaned path (or original if it's just a filename) to construct the default path
+	filename := filepath.Base(cleanedPath)
+	defaultPath := filepath.Join(sshDir, filename)
+
+	// Check if the file exists in the default SSH directory
+	if _, err := os.Stat(defaultPath); err == nil {
+		return defaultPath, nil
+	}
+
+	// File doesn't exist in default SSH directory either
+	return "", fmt.Errorf("could not open %s: file not found in current directory or %s", path, sshDir)
+}
+
 func openFileOrStdin(path string) (*os.File, error) {
 	if path == "-" {
 		return os.Stdin, nil
@@ -271,9 +337,15 @@ func openFileOrStdin(path string) (*os.File, error) {
 		return os.Stdin, nil
 	}
 
-	f, err := os.Open(path)
+	// Resolve the key path (check default SSH directory if needed)
+	resolvedPath, err := resolveKeyPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not open %s: %w", path, err)
+		return nil, err
+	}
+
+	f, err := os.Open(resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not open %s: %w", resolvedPath, err)
 	}
 	return f, nil
 }
