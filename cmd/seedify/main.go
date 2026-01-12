@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,10 +47,10 @@ var (
 			Padding(1, 2) //nolint: gomnd
 
 	language string
-	wordCount int
-	all      bool
+	wordCountStr string
 	seedPassphrase string
 	brave    bool
+	nostr    bool
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify",
@@ -59,13 +60,14 @@ var (
 Valid word counts are: 12, 15, 16, 18, 21, or 24.
 - 12, 15, 18, 21, 24 words use BIP39 format
 - 16 words use Polyseed format`,
-		Example: `  seedify ~/.ssh/id_ed25519 --words 12
-  seedify ~/.ssh/id_ed25519 --words 15
-  seedify ~/.ssh/id_ed25519 --words 16
-  seedify ~/.ssh/id_ed25519 --all
+		Example: `  seedify ~/.ssh/id_ed25519
+  seedify ~/.ssh/id_ed25519 --words 12
+  seedify ~/.ssh/id_ed25519 --words 12,24
+  seedify ~/.ssh/id_ed25519 --words 12 --nostr
+  seedify ~/.ssh/id_ed25519 --words 12,24 --nostr
+  seedify ~/.ssh/id_ed25519 --nostr
   seedify ~/.ssh/id_ed25519 --words 12 --seed-passphrase "my-passphrase"
   seedify ~/.ssh/id_ed25519 --brave
-  seedify ~/.ssh/id_ed25519 --all --brave
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -79,16 +81,8 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 				keyPath = args[0]
 			}
 
-			// Handle --all flag
-			if all {
-				err := generateAllSeedPhrases(keyPath, seedPassphrase, brave)
-				if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
-					return formatPasswordError(err)
-				}
-				return err
-			}
-
 			// Handle --brave flag: generate 25-word phrase with Brave Sync
+			// This is a special case that bypasses the unified output
 			if brave {
 				mnemonic, err := generateBraveSyncPhrase(keyPath, seedPassphrase)
 				if err != nil {
@@ -102,16 +96,37 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 				return nil
 			}
 
-			mnemonic, err := generateSeedPhrase(keyPath, nil, wordCount, seedPassphrase, brave)
+			// Parse word counts from flag
+			wordCounts, err := parseWordCounts(wordCountStr)
 			if err != nil {
-				if strings.Contains(err.Error(), "key is not password-protected") {
-					return formatPasswordError(err)
-				}
-				return err
+				return fmt.Errorf("invalid word counts: %w", err)
 			}
 
-			fmt.Println(mnemonic)
-			return nil
+			// Determine which wallets to derive
+			// If no wallet flags are set, derive all (default behavior)
+			// If wallet flags are set, derive only those specified
+			hasWalletFlags := nostr // || bitcoinNativeSegwit || ethereum || etc. (in future)
+
+			deriveNostr := false
+			if !hasWalletFlags {
+				// No flags set - derive all wallets
+				deriveNostr = true
+			} else {
+				// Flags set - derive only specified wallets
+				deriveNostr = nostr
+			}
+
+			// If --nostr is the only flag (no --words), show only Nostr keys from SSH key
+			if nostr && wordCountStr == "" {
+				return generateNostrKeysOnly(keyPath, seedPassphrase)
+			}
+
+			// Generate unified output (seed phrases + wallet derivations)
+			err = generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr)
+			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
+				return formatPasswordError(err)
+			}
+			return err
 		},
 	}
 
@@ -182,10 +197,10 @@ export functionality in bookmarks and the password manager instead.`,
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&language, "language", "l", "en", "Language")
-	rootCmd.PersistentFlags().IntVarP(&wordCount, "words", "w", 24, "Number of words in the phrase (12, 15, 16, 18, 21, or 24)")
-	rootCmd.PersistentFlags().BoolVar(&all, "all", false, "Generate seed phrases for all word counts (12, 15, 16, 18, 21, 24)")
+	rootCmd.PersistentFlags().StringVarP(&wordCountStr, "words", "w", "", "Word counts to generate (comma-separated: 12,15,18,21,24). If not specified, all word counts are generated.")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
 	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync (prepends hash of 'brave' to entropy and appends 25th word)")
+	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase. If no wallet flags are specified, all wallet types are derived.")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
@@ -370,152 +385,6 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 	}
 }
 
-// generateSeedPhrase generates a seed phrase from an SSH key.
-// seedPassphrase is combined with the SSH key seed to add additional entropy.
-// brave flag determines if the "brave" hash prefix should be prepended.
-func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase string, brave bool) (string, error) {
-	// Validate word count
-	validCounts := map[int]bool{12: true, 15: true, 16: true, 18: true, 21: true, 24: true}
-	if !validCounts[wordCount] {
-		return "", fmt.Errorf("invalid word count: %d (must be 12, 15, 16, 18, 21, or 24)", wordCount)
-	}
-
-	f, err := openFileOrStdin(path)
-	if err != nil {
-		return "", fmt.Errorf("could not read key: %w", err)
-	}
-	defer f.Close() //nolint:errcheck
-	bts, err := io.ReadAll(f)
-	if err != nil {
-		return "", fmt.Errorf("could not read key: %w", err)
-	}
-
-	// Check if key is password-protected (required for this command)
-	// We need to check this before attempting to parse with a password
-	// because if pass is nil, we want to detect unencrypted keys
-	if pass == nil {
-		isProtected, err := isKeyPasswordProtected(bts)
-		if err != nil {
-			// If we can't determine, continue with normal parsing flow
-		} else if !isProtected {
-			// Key is not password-protected - reject it
-			return "", fmt.Errorf("key is not password-protected: keys are required to be password-protected")
-		}
-	}
-
-	key, err := parsePrivateKey(bts, pass)
-	if err != nil && isPasswordError(err) {
-		// Key requires a password - ask for it and parse again with the same bytes
-		pass, err := askKeyPassphrase(path)
-		if err != nil {
-			return "", err
-		}
-		// Parse again with the password using the bytes we already have
-		key, err = parsePrivateKey(bts, pass)
-		if err != nil {
-			return "", fmt.Errorf("could not parse key with passphrase: %w", err)
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("could not parse key: %w", err)
-	}
-
-	switch key := key.(type) {
-	case *ed25519.PrivateKey:
-		// Generate mnemonic with the specified word count and seed passphrase
-		return seedify.ToMnemonicWithLength(key, wordCount, seedPassphrase, brave)
-	default:
-		return "", fmt.Errorf("unknown key type: %v", key)
-	}
-}
-
-// generateAllSeedPhrases generates seed phrases for all word counts and formats them nicely.
-// seedPassphrase is combined with the SSH key seed to add additional entropy.
-func generateAllSeedPhrases(path string, seedPassphrase string, brave bool) error {
-	return generateAllSeedPhrasesWithPass(path, seedPassphrase, nil, brave)
-}
-
-// generateAllSeedPhrasesWithPass is the internal implementation that handles password-protected keys.
-func generateAllSeedPhrasesWithPass(path string, seedPassphrase string, pass []byte, brave bool) error {
-	// All valid word counts in order
-	wordCounts := []int{12, 15, 16, 18, 21, 24}
-
-	// Parse the key once
-	f, err := openFileOrStdin(path)
-	if err != nil {
-		return fmt.Errorf("could not read key: %w", err)
-	}
-	defer f.Close() //nolint:errcheck
-	bts, err := io.ReadAll(f)
-	if err != nil {
-		return fmt.Errorf("could not read key: %w", err)
-	}
-
-	// Check if key is password-protected (required for this command)
-	// We need to check this before attempting to parse with a password
-	// because if pass is nil, we want to detect unencrypted keys
-	if pass == nil {
-		isProtected, err := isKeyPasswordProtected(bts)
-		if err != nil {
-			// If we can't determine, continue with normal parsing flow
-		} else if !isProtected {
-			// Key is not password-protected - reject it
-			return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
-		}
-	}
-
-	key, err := parsePrivateKey(bts, pass)
-	if err != nil && isPasswordError(err) {
-		// Key requires a password - ask for it and parse again with the same bytes
-		pass, err := askKeyPassphrase(path)
-		if err != nil {
-			return err
-		}
-		// Parse again with the password using the bytes we already have
-		key, err = parsePrivateKey(bts, pass)
-		if err != nil {
-			return fmt.Errorf("could not parse key with passphrase: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("could not parse key: %w", err)
-	}
-
-	ed25519Key, ok := key.(*ed25519.PrivateKey)
-	if !ok {
-		return fmt.Errorf("unknown key type: %v", key)
-	}
-
-	// Generate all mnemonics
-	mnemonics := make(map[int]string)
-	for _, count := range wordCounts {
-		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false)
-		if err != nil {
-			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, err)
-		}
-		mnemonics[count] = mnemonic
-	}
-	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
-	if err != nil {
-		return fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
-	}
-
-	// Raw output: just print all mnemonics separated by newlines
-	for i, count := range wordCounts {
-		fmt.Printf("%d words:\n", count)
-		fmt.Println(mnemonics[count])
-		// Add blank line between each category (except after the last one)
-		if i < len(wordCounts)-1 {
-			fmt.Println()
-		}
-	}
-	// Add Brave Sync phrase (below the 24 words section)
-	if len(wordCounts) > 0 {
-		fmt.Println()
-	}
-	fmt.Println("25 words (Brave Sync):")
-	fmt.Println(braveMnemonic)
-	return nil
-}
-
 func isPasswordError(err error) bool {
 	var kerr *ssh.PassphraseMissingError
 	return errors.As(err, &kerr)
@@ -648,6 +517,182 @@ func readPassword(msg string) ([]byte, error) {
 		return nil, fmt.Errorf("could not read passphrase: %w", err)
 	}
 	return pass, nil
+}
+
+// generateNostrKeysOnly generates and displays only Nostr keys derived directly from the SSH key.
+func generateNostrKeysOnly(keyPath string, seedPassphrase string) error {
+	// Parse the key once
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	// Check if key is password-protected (required for this command)
+	isProtected, err := isKeyPasswordProtected(bts)
+	if err != nil {
+		// If we can't determine, continue with normal parsing flow
+	} else if !isProtected {
+		// Key is not password-protected - reject it
+		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		// Key requires a password - ask for it and parse again with the same bytes
+		pass, err := askKeyPassphrase(keyPath)
+		if err != nil {
+			return err
+		}
+		// Parse again with the password using the bytes we already have
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return fmt.Errorf("unknown key type: %v", key)
+	}
+
+	// Derive Nostr keys directly from the SSH key
+	npub, nsec, err := seedify.DeriveNostrKeysFromEd25519(ed25519Key)
+	if err != nil {
+		return fmt.Errorf("failed to derive Nostr keys: %w", err)
+	}
+
+	// Display Nostr keys
+	fmt.Println("[nostr keys]")
+	fmt.Println()
+	fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
+	fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+
+	return nil
+}
+
+// generateUnifiedOutput generates seed phrases and wallet derivations for the specified word counts.
+// It displays outputs in a fixed order: seed phrase first, then wallet derivations.
+// When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
+func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool) error {
+	// Parse the key once
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	// Check if key is password-protected (required for this command)
+	isProtected, err := isKeyPasswordProtected(bts)
+	if err != nil {
+		// If we can't determine, continue with normal parsing flow
+	} else if !isProtected {
+		// Key is not password-protected - reject it
+		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		// Key requires a password - ask for it and parse again with the same bytes
+		pass, err := askKeyPassphrase(keyPath)
+		if err != nil {
+			return err
+		}
+		// Parse again with the password using the bytes we already have
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return fmt.Errorf("unknown key type: %v", key)
+	}
+
+	// Generate and display outputs for each word count
+	for i, count := range wordCounts {
+		// Generate seed phrase
+		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false)
+		if err != nil {
+			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, err)
+		}
+
+		// Display seed phrase
+		fmt.Printf("[%d word seed phrase]\n", count)
+		fmt.Println()
+		fmt.Println(mnemonic)
+		fmt.Println()
+
+		// Add blank line between word counts (except after the last one)
+		if i < len(wordCounts)-1 {
+			fmt.Println()
+		}
+	}
+
+	// Derive and display wallet outputs in fixed order
+	// Nostr keys are derived directly from the SSH key, not from seed phrases
+	if deriveNostr {
+		npub, nsec, err := seedify.DeriveNostrKeysFromEd25519(ed25519Key)
+		if err != nil {
+			return fmt.Errorf("failed to derive Nostr keys: %w", err)
+		}
+
+		fmt.Println("[nostr keys]")
+		fmt.Println()
+		fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
+		fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+	}
+
+	return nil
+}
+
+// parseWordCounts parses a comma-separated string of word counts and validates them.
+// Valid word counts are: 12, 15, 16, 18, 21, or 24.
+func parseWordCounts(wordCountStr string) ([]int, error) {
+	if wordCountStr == "" {
+		return []int{12, 15, 16, 18, 21, 24}, nil
+	}
+
+	validCounts := map[int]bool{12: true, 15: true, 16: true, 18: true, 21: true, 24: true}
+	parts := strings.Split(wordCountStr, ",")
+	wordCounts := make([]int, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		count, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid word count %q: %w", part, err)
+		}
+
+		if !validCounts[count] {
+			return nil, fmt.Errorf("invalid word count: %d (must be 12, 15, 16, 18, 21, or 24)", count)
+		}
+
+		wordCounts = append(wordCounts, count)
+	}
+
+	if len(wordCounts) == 0 {
+		return []int{12, 15, 16, 18, 21, 24}, nil
+	}
+
+	return wordCounts, nil
 }
 
 func askKeyPassphrase(path string) ([]byte, error) {

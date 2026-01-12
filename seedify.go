@@ -14,11 +14,13 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"time"
 
 	polyseed "github.com/complex-gh/polyseed_go"
+	"github.com/nbd-wtf/go-nostr/nip19"
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
 )
@@ -247,4 +249,89 @@ func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (st
 
 	// Append the 25th word to the 24-word phrase
 	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
+}
+
+// DeriveNostrKeys derives Nostr keys (npub/nsec) from a BIP39 mnemonic phrase.
+// The function converts the mnemonic to a seed, hashes it to create a deterministic
+// Ed25519 private key, and then encodes the keys to npub/nsec format using bech32 encoding.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - npub: The Nostr public key in bech32 format (starts with "npub1")
+//   - nsec: The Nostr private key in bech32 format (starts with "nsec1")
+//   - error: Any error that occurred during derivation
+//
+// The function uses SHA256 to hash the full 64-byte BIP39 seed to create a
+// deterministic 32-byte Ed25519 private key. This ensures the same mnemonic
+// always produces the same npub/nsec pair.
+func DeriveNostrKeys(mnemonic string, bip39Passphrase string) (npub string, nsec string, err error) {
+	// Convert mnemonic to seed using BIP39
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Hash the seed to get a deterministic 32-byte private key
+	// This uses the full 64-byte seed for better entropy distribution
+	hash := sha256.Sum256(seed)
+	privateKeyBytes := hash[:]
+
+	// Create Ed25519 private key from the hashed seed
+	privateKey := ed25519.NewKeyFromSeed(privateKeyBytes)
+
+	// Get the public key from the private key
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+
+	// Convert keys to hex strings (Nostr uses hex-encoded keys)
+	privateKeyHex := hex.EncodeToString(privateKey)
+	publicKeyHex := hex.EncodeToString(publicKey)
+
+	// Encode keys to npub/nsec format using nip19 bech32 encoding
+	npub, err = nip19.EncodePublicKey(publicKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+
+	nsec, err = nip19.EncodePrivateKey(privateKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode private key: %w", err)
+	}
+
+	return npub, nsec, nil
+}
+
+// DeriveNostrKeysFromEd25519 derives Nostr keys (npub/nsec) directly from an Ed25519 private key.
+// This function is used to derive Nostr keys from SSH keys without going through seed phrases.
+//
+// Parameters:
+//   - key: An Ed25519 private key (e.g., from an SSH key)
+//
+// Returns:
+//   - npub: The Nostr public key in bech32 format (starts with "npub1")
+//   - nsec: The Nostr private key in bech32 format (starts with "nsec1")
+//   - error: Any error that occurred during derivation
+func DeriveNostrKeysFromEd25519(key *ed25519.PrivateKey) (npub string, nsec string, err error) {
+	// Get the public key from the private key
+	publicKey := (*key).Public().(ed25519.PublicKey)
+
+	// Convert keys to hex strings (Nostr uses hex-encoded keys)
+	// ed25519.PrivateKey is []byte, so we encode the slice directly
+	privateKeyHex := hex.EncodeToString(*key)
+	publicKeyHex := hex.EncodeToString(publicKey)
+
+	// Encode keys to npub/nsec format using nip19 bech32 encoding
+	npub, err = nip19.EncodePublicKey(publicKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+
+	nsec, err = nip19.EncodePrivateKey(privateKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode private key: %w", err)
+	}
+
+	return npub, nsec, nil
 }

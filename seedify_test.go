@@ -126,3 +126,103 @@ func TestToMnemonicWithLength_DifferentInputsProduceDifferentResults(t *testing.
 
 	is.True(mnemonic3 != mnemonic4)
 }
+
+// TestDeriveNostrKeys_ValidFormat tests that DeriveNostrKeys produces valid npub/nsec keys
+func TestDeriveNostrKeys_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	// Use a standard BIP39 test mnemonic
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	npub, nsec, err := DeriveNostrKeys(mnemonic, "")
+	is.NoErr(err)
+
+	// Verify format - npub should start with "npub1"
+	is.True(strings.HasPrefix(npub, "npub1"))
+
+	// Verify format - nsec should start with "nsec1"
+	is.True(strings.HasPrefix(nsec, "nsec1"))
+
+	// Verify keys are not empty
+	is.True(len(npub) > 0)
+	is.True(len(nsec) > 0)
+}
+
+// TestDeriveNostrKeys_Deterministic verifies that the same mnemonic always
+// produces the same npub/nsec pair
+func TestDeriveNostrKeys_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	// Derive keys multiple times
+	npub1, nsec1, err := DeriveNostrKeys(mnemonic, "")
+	is.NoErr(err)
+
+	npub2, nsec2, err := DeriveNostrKeys(mnemonic, "")
+	is.NoErr(err)
+
+	npub3, nsec3, err := DeriveNostrKeys(mnemonic, "")
+	is.NoErr(err)
+
+	// All should be identical
+	is.Equal(npub1, npub2)
+	is.Equal(npub2, npub3)
+	is.Equal(nsec1, nsec2)
+	is.Equal(nsec2, nsec3)
+}
+
+// TestDeriveNostrKeys_DifferentMnemonicsProduceDifferentKeys verifies that
+// different mnemonics produce different keys
+func TestDeriveNostrKeys_DifferentMnemonicsProduceDifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic1 := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	mnemonic2 := "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"
+
+	npub1, nsec1, err := DeriveNostrKeys(mnemonic1, "")
+	is.NoErr(err)
+
+	npub2, nsec2, err := DeriveNostrKeys(mnemonic2, "")
+	is.NoErr(err)
+
+	// Different mnemonics should produce different keys
+	is.True(npub1 != npub2)
+	is.True(nsec1 != nsec2)
+}
+
+// TestDeriveNostrKeys_WithPassphrase tests that BIP39 passphrase affects key derivation
+func TestDeriveNostrKeys_WithPassphrase(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	// Derive keys without passphrase
+	npub1, nsec1, err := DeriveNostrKeys(mnemonic, "")
+	is.NoErr(err)
+
+	// Derive keys with passphrase
+	npub2, nsec2, err := DeriveNostrKeys(mnemonic, "test-passphrase")
+	is.NoErr(err)
+
+	// Different passphrases should produce different keys
+	is.True(npub1 != npub2)
+	is.True(nsec1 != nsec2)
+}
+
+// TestDeriveNostrKeys_InvalidMnemonic tests that invalid mnemonics return errors
+func TestDeriveNostrKeys_InvalidMnemonic(t *testing.T) {
+	is := is.New(t)
+
+	invalidMnemonics := []string{
+		"invalid mnemonic phrase",
+		"abandon abandon abandon",
+		"",
+		"not enough words here",
+	}
+
+	for _, mnemonic := range invalidMnemonics {
+		_, _, err := DeriveNostrKeys(mnemonic, "")
+		is.True(err != nil)
+	}
+}
