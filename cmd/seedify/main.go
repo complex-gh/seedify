@@ -201,10 +201,10 @@ export functionality in bookmarks and the password manager instead.`,
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&language, "language", "l", "en", "Language")
-	rootCmd.PersistentFlags().StringVarP(&wordCountStr, "words", "w", "", "Word counts to generate (comma-separated: 12,15,18,21,24). If not specified, all word counts are generated.")
+	rootCmd.PersistentFlags().StringVarP(&wordCountStr, "words", "w", "", "Word counts to generate (comma-separated: 12,15,18,21,24)")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
-	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync (prepends hash of 'brave' to entropy and appends 25th word)")
-	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase. If no wallet flags are specified, all wallet types are derived.")
+	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync")
+	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
