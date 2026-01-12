@@ -96,33 +96,37 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 				return nil
 			}
 
-			// Parse word counts from flag
-			wordCounts, err := parseWordCounts(wordCountStr)
-			if err != nil {
-				return fmt.Errorf("invalid word counts: %w", err)
-			}
+			// Check if any derivation flags were explicitly provided
+			hasWordsFlag := wordCountStr != ""
+			hasNostrFlag := nostr
+			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag
 
-			// Determine which wallets to derive
-			// If no wallet flags are set, derive all (default behavior)
-			// If wallet flags are set, derive only those specified
-			hasWalletFlags := nostr // || bitcoinNativeSegwit || ethereum || etc. (in future)
+			// Determine which derivations to show
+			// If no flags provided: show all derivations (all word counts + nostr)
+			// If flags provided: show only specified derivations
+			var wordCounts []int
+			var deriveNostr bool
 
-			deriveNostr := false
-			if !hasWalletFlags {
-				// No flags set - derive all wallets
+			if !hasAnyDerivationFlags {
+				// No flags provided - show all derivations
+				wordCounts = []int{12, 15, 16, 18, 21, 24}
 				deriveNostr = true
 			} else {
-				// Flags set - derive only specified wallets
-				deriveNostr = nostr
-			}
-
-			// If --nostr is the only flag (no --words), show only Nostr keys from SSH key
-			if nostr && wordCountStr == "" {
-				return generateNostrKeysOnly(keyPath, seedPassphrase)
+				// Flags provided - show only specified derivations
+				if hasWordsFlag {
+					// Parse word counts from flag
+					parsedCounts, err := parseWordCounts(wordCountStr)
+					if err != nil {
+						return fmt.Errorf("invalid word counts: %w", err)
+					}
+					wordCounts = parsedCounts
+				}
+				// Only derive nostr if the flag was explicitly set
+				deriveNostr = hasNostrFlag
 			}
 
 			// Generate unified output (seed phrases + wallet derivations)
-			err = generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr)
+			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
