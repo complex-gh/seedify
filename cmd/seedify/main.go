@@ -47,7 +47,6 @@ var (
 
 	language string
 	wordCount int
-	raw      bool
 	all      bool
 	seedPassphrase string
 	brave    bool
@@ -82,7 +81,7 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 
 			// Handle --all flag
 			if all {
-				err := generateAllSeedPhrases(keyPath, raw, seedPassphrase, brave)
+				err := generateAllSeedPhrases(keyPath, seedPassphrase, brave)
 				if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 					return formatPasswordError(err)
 				}
@@ -99,32 +98,8 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 					return err
 				}
 
-				if raw {
-					fmt.Println(mnemonic)
-					return nil
-				}
-
-				if isatty.IsTerminal(os.Stdout.Fd()) {
-					b := strings.Builder{}
-					w := getWidth(maxWidth)
-
-					b.WriteRune('\n')
-					renderBlock(&b, baseStyle, w, "Generated 25-word seed phrase (with Brave Sync):")
-					renderBlock(&b, mnemonicStyle, w, mnemonic)
-					b.WriteRune('\n')
-					renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
-					b.WriteRune('\n')
-
-					fmt.Println(b.String())
-				} else {
-					fmt.Println(mnemonic)
-				}
+				fmt.Println(mnemonic)
 				return nil
-			}
-
-			// Show warning for 16 words (polyseed format) unless --raw is used
-			if wordCount == 16 && !raw {
-				_, _ = fmt.Fprintf(os.Stderr, "Warning: 16 words will be in Polyseed format (not BIP39). Use --raw to suppress this message.\n")
 			}
 
 			mnemonic, err := generateSeedPhrase(keyPath, nil, wordCount, seedPassphrase, brave)
@@ -135,27 +110,7 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 				return err
 			}
 
-			if raw {
-				fmt.Println(mnemonic)
-				return nil
-			}
-			if isatty.IsTerminal(os.Stdout.Fd()) {
-				b := strings.Builder{}
-				w := getWidth(maxWidth)
-
-				b.WriteRune('\n')
-				formatNote := ""
-				if wordCount == 16 {
-					formatNote = " (Polyseed format)"
-				}
-				renderBlock(&b, baseStyle, w, fmt.Sprintf("Generated %d-word seed phrase%s:", wordCount, formatNote))
-				renderBlock(&b, mnemonicStyle, w, mnemonic)
-				b.WriteRune('\n')
-
-				fmt.Println(b.String())
-			} else {
-				fmt.Println(mnemonic)
-			}
+			fmt.Println(mnemonic)
 			return nil
 		},
 	}
@@ -195,8 +150,7 @@ Warning: Brave does not officially support using the Sync code as a backup
 and you should not rely on this continuing to work in the future. Use the
 export functionality in bookmarks and the password manager instead.`,
 		Example: `  seedify brave-sync-25th
-  seedify brave-sync-25th --date "2024-01-15"
-  seedify brave-sync-25th --raw`,
+  seedify brave-sync-25th --date "2024-01-15"`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -218,27 +172,7 @@ export functionality in bookmarks and the password manager instead.`,
 				return err
 			}
 
-			if raw {
-				fmt.Println(word)
-				return nil
-			}
-
-			if isatty.IsTerminal(os.Stdout.Fd()) {
-				b := strings.Builder{}
-				w := getWidth(maxWidth)
-
-				b.WriteRune('\n')
-				renderBlock(&b, baseStyle, w, "The 25th word for Brave Sync is:")
-				renderBlock(&b, mnemonicStyle, w, word)
-				b.WriteRune('\n')
-				renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
-				b.WriteRune('\n')
-
-				fmt.Println(b.String())
-			} else {
-				fmt.Println(word)
-			}
-
+			fmt.Println(word)
 			return nil
 		},
 	}
@@ -248,7 +182,6 @@ export functionality in bookmarks and the password manager instead.`,
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&language, "language", "l", "en", "Language")
-	rootCmd.PersistentFlags().BoolVar(&raw, "raw", false, "Print raw seed phrase (words and spaces only)")
 	rootCmd.PersistentFlags().IntVarP(&wordCount, "words", "w", 24, "Number of words in the phrase (12, 15, 16, 18, 21, or 24)")
 	rootCmd.PersistentFlags().BoolVar(&all, "all", false, "Generate seed phrases for all word counts (12, 15, 16, 18, 21, 24)")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
@@ -256,7 +189,6 @@ func init() {
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
-	braveSync25thCmd.Flags().BoolVar(&raw, "raw", false, "Print raw word only")
 }
 
 func main() {
@@ -498,12 +430,12 @@ func generateSeedPhrase(path string, pass []byte, wordCount int, seedPassphrase 
 
 // generateAllSeedPhrases generates seed phrases for all word counts and formats them nicely.
 // seedPassphrase is combined with the SSH key seed to add additional entropy.
-func generateAllSeedPhrases(path string, rawOutput bool, seedPassphrase string, brave bool) error {
-	return generateAllSeedPhrasesWithPass(path, rawOutput, seedPassphrase, nil, brave)
+func generateAllSeedPhrases(path string, seedPassphrase string, brave bool) error {
+	return generateAllSeedPhrasesWithPass(path, seedPassphrase, nil, brave)
 }
 
 // generateAllSeedPhrasesWithPass is the internal implementation that handles password-protected keys.
-func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase string, pass []byte, brave bool) error {
+func generateAllSeedPhrasesWithPass(path string, seedPassphrase string, pass []byte, brave bool) error {
 	// All valid word counts in order
 	wordCounts := []int{12, 15, 16, 18, 21, 24}
 
@@ -566,73 +498,21 @@ func generateAllSeedPhrasesWithPass(path string, rawOutput bool, seedPassphrase 
 		return fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
 	}
 
-	// Output formatting
-	if rawOutput {
-		// Raw output: just print all mnemonics separated by newlines
-		for i, count := range wordCounts {
-			fmt.Printf("%d words:\n", count)
-			fmt.Println(mnemonics[count])
-			// Add blank line between each category (except after the last one)
-			if i < len(wordCounts)-1 {
-				fmt.Println()
-			}
-		}
-		// Add Brave Sync phrase (below the 24 words section)
-		if len(wordCounts) > 0 {
+	// Raw output: just print all mnemonics separated by newlines
+	for i, count := range wordCounts {
+		fmt.Printf("%d words:\n", count)
+		fmt.Println(mnemonics[count])
+		// Add blank line between each category (except after the last one)
+		if i < len(wordCounts)-1 {
 			fmt.Println()
 		}
-		fmt.Println("25 words (Brave Sync):")
-		fmt.Println(braveMnemonic)
-		return nil
 	}
-
-		if isatty.IsTerminal(os.Stdout.Fd()) {
-		// Formatted output for terminal
-		b := strings.Builder{}
-		w := getWidth(maxWidth)
-
-		b.WriteRune('\n')
-		renderBlock(&b, baseStyle, w, "Generated seed phrases for all formats:")
-		b.WriteRune('\n')
-
-		for _, count := range wordCounts {
-			formatNote := ""
-			if count == 16 {
-				formatNote = " (Polyseed format)"
-			} else {
-				formatNote = " (BIP39 format)"
-			}
-
-			header := fmt.Sprintf("%d words%s:", count, formatNote)
-			renderBlock(&b, baseStyle, w, header)
-			renderBlock(&b, mnemonicStyle, w, mnemonics[count])
-			b.WriteRune('\n')
-		}
-
-		// Add Brave Sync phrase (below the 24 words section)
-		b.WriteRune('\n')
-		renderBlock(&b, baseStyle, w, "25 words (Brave Sync):")
-		renderBlock(&b, mnemonicStyle, w, braveMnemonic)
-		b.WriteRune('\n')
-		renderBlock(&b, baseStyle, w, "Warning: Brave does not officially support using the Sync code as a backup and you should not rely on this continuing to work in the future.")
-		b.WriteRune('\n')
-
-		fmt.Println(b.String())
-	} else {
-		// Non-terminal output: structured format
-		for _, count := range wordCounts {
-			formatNote := ""
-			if count == 16 {
-				formatNote = " (Polyseed)"
-			} else {
-				formatNote = " (BIP39)"
-			}
-			fmt.Printf("%d words%s: %s\n", count, formatNote, mnemonics[count])
-		}
-		// Add Brave Sync phrase (below the 24 words section)
-		fmt.Printf("25 words (Brave Sync): %s\n", braveMnemonic)
+	// Add Brave Sync phrase (below the 24 words section)
+	if len(wordCounts) > 0 {
+		fmt.Println()
 	}
-
+	fmt.Println("25 words (Brave Sync):")
+	fmt.Println(braveMnemonic)
 	return nil
 }
 
