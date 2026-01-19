@@ -31,9 +31,12 @@ builds:
 
 archives:
   - id: default
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
     files:
       - README.md
@@ -44,7 +47,7 @@ checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
 
 snapshot:
-  name_template: '{{ .Tag }}-next'
+  version_template: '{{ .Tag }}-next'
 
 changelog:
   sort: asc
@@ -69,24 +72,36 @@ release:
     
     **Full Changelog**: https://github.com/complex-gh/seedify/compare/{{ .PreviousTag }}...{{ .Tag }}
 
-brews:
+# Homebrew Casks (replaces deprecated 'brews')
+homebrew_casks:
   - name: seedify
-    repository:
-      owner: complex-gh
-      name: homebrew-seedify
-      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+    binaries:
+      - seedify
     homepage: https://github.com/complex-gh/seedify
     description: Create seed phrases deterministically from SSH keys
-    license: MIT
-    test: |
-      system "#{bin}/seedify --version"
-    commit_author:
-      name: goreleaser
-      email: complex@ft.hn
+    caveats: |
+      seedify is not signed/notarized. On first run, macOS may block it.
+      If you see "seedify is damaged and cannot be opened", run:
+        xattr -dr com.apple.quarantine $(which seedify)
+    # Remove quarantine attribute on install since binary is not signed
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/seedify"]
+          end
     commit_msg_template: |
       {{ .ProjectName }} {{ .Tag }}
 
       Created with https://github.com/goreleaser/goreleaser
+    repository:
+      owner: complex-gh
+      name: homebrew-seedify
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+      git:
+        commit_author:
+          name: goreleaser
+          email: complex@ft.hn
 
 nfpms:
   - id: seedify
@@ -101,25 +116,17 @@ nfpms:
       - rpm
     bindir: /usr/local/bin
 
-dockers:
-  - ids:
+# Docker v2 (replaces deprecated 'dockers')
+dockers_v2:
+  - id: seedify
+    ids:
       - seedify
-    goos: linux
-    goarch: amd64
-    image_templates:
-      - 'ghcr.io/complex-gh/seedify:{{ .Tag }}'
-      - 'ghcr.io/complex-gh/seedify:latest'
     dockerfile: Dockerfile
-    build_flag_templates:
-      - '--platform=linux/amd64'
-
-  - ids:
-      - seedify
-    goos: linux
-    goarch: arm64
-    image_templates:
-      - 'ghcr.io/complex-gh/seedify:{{ .Tag }}-arm64'
-      - 'ghcr.io/complex-gh/seedify:latest-arm64'
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - '--platform=linux/arm64'
+    images:
+      - ghcr.io/complex-gh/seedify
+    tags:
+      - '{{ .Tag }}'
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
