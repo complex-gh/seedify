@@ -38,10 +38,9 @@ archives:
         formats:
           - zip
     name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
+    # Only include the binary (no extra files)
     files:
-      - README.md
-      - LICENSE
-      - CHANGELOG.md
+      - none*
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
@@ -98,10 +97,6 @@ homebrew_casks:
       owner: complex-gh
       name: homebrew-seedify
       token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
-      git:
-        commit_author:
-          name: goreleaser
-          email: complex@ft.hn
 
 nfpms:
   - id: seedify
