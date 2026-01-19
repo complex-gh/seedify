@@ -43,7 +43,7 @@ archives:
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
 
-snapshots:
+snapshot:
   name_template: '{{ .Tag }}-next'
 
 changelog:
@@ -69,6 +69,25 @@ release:
     
     **Full Changelog**: https://github.com/complex-gh/seedify/compare/{{ .PreviousTag }}...{{ .Tag }}
 
+brews:
+  - name: seedify
+    repository:
+      owner: complex-gh
+      name: homebrew-seedify
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+    homepage: https://github.com/complex-gh/seedify
+    description: Create seed phrases deterministically from SSH keys
+    license: MIT
+    test: |
+      system "#{bin}/seedify --version"
+    commit_author:
+      name: goreleaser
+      email: complex@ft.hn
+    commit_msg_template: |
+      {{ .ProjectName }} {{ .Tag }}
+
+      Created with https://github.com/goreleaser/goreleaser
+
 nfpms:
   - id: seedify
     package_name: seedify
@@ -81,18 +100,11 @@ nfpms:
       - deb
       - rpm
     bindir: /usr/local/bin
-    contents:
-      - src: dist/seedify-linux-amd64/seedify
-        dst: /usr/local/bin/seedify
-        file_info:
-          mode: 0755
-      - src: dist/seedify-linux-arm64/seedify
-        dst: /usr/local/bin/seedify
-        file_info:
-          mode: 0755
 
 dockers:
-  - goos: linux
+  - ids:
+      - seedify
+    goos: linux
     goarch: amd64
     image_templates:
       - 'ghcr.io/complex-gh/seedify:{{ .Tag }}'
@@ -100,10 +112,10 @@ dockers:
     dockerfile: Dockerfile
     build_flag_templates:
       - '--platform=linux/amd64'
-    extra_files:
-      - dist/seedify-linux-amd64/seedify
 
-  - goos: linux
+  - ids:
+      - seedify
+    goos: linux
     goarch: arm64
     image_templates:
       - 'ghcr.io/complex-gh/seedify:{{ .Tag }}-arm64'
@@ -111,5 +123,3 @@ dockers:
     dockerfile: Dockerfile
     build_flag_templates:
       - '--platform=linux/arm64'
-    extra_files:
-      - dist/seedify-linux-arm64/seedify
