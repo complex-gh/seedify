@@ -197,6 +197,66 @@ export functionality in bookmarks and the password manager instead.`,
 	}
 
 	dateStr string
+
+	// completionCmd generates shell completion scripts for bash, zsh, fish, and powershell.
+	completionCmd = &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for seedify.
+
+To load completions:
+
+Bash:
+  $ source <(seedify completion bash)
+
+  # To load completions for each session, execute once:
+  # Linux:
+  $ seedify completion bash > /etc/bash_completion.d/seedify
+  # macOS:
+  $ seedify completion bash > $(brew --prefix)/etc/bash_completion.d/seedify
+
+Zsh:
+  # If shell completion is not already enabled in your environment,
+  # you will need to enable it. You can execute the following once:
+  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+  # To load completions for each session, execute once:
+  $ seedify completion zsh > "${fpath[1]}/_seedify"
+
+  # You will need to start a new shell for this setup to take effect.
+
+Fish:
+  $ seedify completion fish | source
+
+  # To load completions for each session, execute once:
+  $ seedify completion fish > ~/.config/fish/completions/seedify.fish
+
+PowerShell:
+  PS> seedify completion powershell | Out-String | Invoke-Expression
+
+  # To load completions for every new session, run:
+  PS> seedify completion powershell > seedify.ps1
+  # and source this file from your PowerShell profile.
+`,
+		DisableFlagsInUseLine: true,
+		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		SilenceUsage:          true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return rootCmd.GenBashCompletion(os.Stdout)
+			case "zsh":
+				return rootCmd.GenZshCompletion(os.Stdout)
+			case "fish":
+				return rootCmd.GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+			default:
+				return fmt.Errorf("unknown shell: %s", args[0])
+			}
+		},
+	}
 )
 
 func init() {
@@ -207,6 +267,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
+	rootCmd.AddCommand(completionCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
 }
 
