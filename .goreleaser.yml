@@ -37,8 +37,7 @@ archives:
       - goos: windows
         formats:
           - zip
-    name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
-    # Only include the binary (no extra files)
+    name_template: '{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}'
     files:
       - none*
 
@@ -71,7 +70,6 @@ release:
     
     **Full Changelog**: https://github.com/complex-gh/seedify/compare/{{ .PreviousTag }}...{{ .Tag }}
 
-# Homebrew Casks (replaces deprecated 'brews')
 homebrew_casks:
   - name: seedify
     binaries:
@@ -82,7 +80,6 @@ homebrew_casks:
       seedify is not signed/notarized. On first run, macOS may block it.
       If you see 'seedify is damaged and cannot be opened', run:
         xattr -dr com.apple.quarantine $(which seedify)
-    # Remove quarantine attribute on install since binary is not signed
     hooks:
       post:
         install: |
@@ -111,7 +108,6 @@ nfpms:
       - rpm
     bindir: /usr/local/bin
 
-# Docker v2 (replaces deprecated 'dockers')
 dockers_v2:
   - id: seedify
     ids:
