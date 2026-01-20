@@ -80,7 +80,7 @@ homebrew_casks:
     description: Create seed phrases deterministically from SSH keys
     caveats: |
       seedify is not signed/notarized. On first run, macOS may block it.
-      If you see "seedify is damaged and cannot be opened", run:
+      If you see 'seedify is damaged and cannot be opened', run:
         xattr -dr com.apple.quarantine $(which seedify)
     # Remove quarantine attribute on install since binary is not signed
     hooks:
