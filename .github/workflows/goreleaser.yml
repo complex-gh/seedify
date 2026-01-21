@@ -44,7 +44,7 @@ jobs:
           lfs: ${{ inputs.lfs }}
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ inputs.go_version }}
+          go-version: ${{ inputs.go_version || '1.25.6' }}
           cache: true
           check-latest: true
       - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
