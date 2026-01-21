@@ -106,7 +106,7 @@ nfpms:
 brews:
   - repository:
       owner: complex-gh
-      name: homebrew-seedify
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     goarm: 7
     install: |-
@@ -119,14 +119,14 @@ brews:
 scoops:
   - repository:
       owner: complex-gh
-      name: scoop-seedify
+      name: scoop-bucket
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
 
 nix:
   - repository:
       owner: complex-gh
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-      name: nur-seedify
+      name: nur
     extra_install: |-
       installManPage ./manpages/seedify.1.gz
       installShellCompletion ./completions/*
