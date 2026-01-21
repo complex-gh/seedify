@@ -1,6 +1,8 @@
+// Package main provides the seedify CLI tool for generating seed phrases from SSH keys.
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -34,23 +36,18 @@ const (
 )
 
 var (
-	baseStyle = lipgloss.NewStyle().Margin(0, 0, 1, 2) //nolint: gomnd
-	violet    = lipgloss.Color(completeColor("#6B50FF", "63", "12"))
-	red       = lipgloss.Color(completeColor("#FF4444", "196", "9"))
-	mnemonicStyle = baseStyle.
-			Foreground(violet).
-			Background(lipgloss.AdaptiveColor{Light: completeColor("#EEEBFF", "255", "7"), Dark: completeColor("#1B1731", "235", "8")}).
-			Padding(1, 2) //nolint: gomnd
+	baseStyle  = lipgloss.NewStyle().Margin(0, 0, 1, 2) //nolint:mnd
+	red        = lipgloss.Color(completeColor("#FF4444", "196", "9"))
 	errorStyle = baseStyle.
 			Foreground(red).
 			Background(lipgloss.AdaptiveColor{Light: completeColor("#FFEBEB", "255", "7"), Dark: completeColor("#2B1A1A", "235", "8")}).
-			Padding(1, 2) //nolint: gomnd
+			Padding(1, 2) //nolint:mnd
 
-	language string
-	wordCountStr string
+	language       string
+	wordCountStr   string
 	seedPassphrase string
-	brave    bool
-	nostr    bool
+	brave          bool
+	nostr          bool
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify",
@@ -188,7 +185,7 @@ export functionality in bookmarks and the password manager instead.`,
 			}
 
 			if err != nil {
-				return err
+				return fmt.Errorf("could not get 25th word: %w", err)
 			}
 
 			fmt.Println(word)
@@ -197,6 +194,66 @@ export functionality in bookmarks and the password manager instead.`,
 	}
 
 	dateStr string
+
+	// completionCmd generates shell completion scripts for bash, zsh, fish, and powershell.
+	completionCmd = &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion script",
+		Long: `Generate shell completion script for seedify.
+
+To load completions:
+
+Bash:
+  $ source <(seedify completion bash)
+
+  # To load completions for each session, execute once:
+  # Linux:
+  $ seedify completion bash > /etc/bash_completion.d/seedify
+  # macOS:
+  $ seedify completion bash > $(brew --prefix)/etc/bash_completion.d/seedify
+
+Zsh:
+  # If shell completion is not already enabled in your environment,
+  # you will need to enable it. You can execute the following once:
+  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+  # To load completions for each session, execute once:
+  $ seedify completion zsh > "${fpath[1]}/_seedify"
+
+  # You will need to start a new shell for this setup to take effect.
+
+Fish:
+  $ seedify completion fish | source
+
+  # To load completions for each session, execute once:
+  $ seedify completion fish > ~/.config/fish/completions/seedify.fish
+
+PowerShell:
+  PS> seedify completion powershell | Out-String | Invoke-Expression
+
+  # To load completions for every new session, run:
+  PS> seedify completion powershell > seedify.ps1
+  # and source this file from your PowerShell profile.
+`,
+		DisableFlagsInUseLine: true,
+		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		SilenceUsage:          true,
+		RunE: func(_ *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return rootCmd.GenBashCompletion(os.Stdout)
+			case "zsh":
+				return rootCmd.GenZshCompletion(os.Stdout)
+			case "fish":
+				return rootCmd.GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return rootCmd.GenPowerShellCompletionWithDesc(os.Stdout)
+			default:
+				return fmt.Errorf("unknown shell: %s", args[0])
+			}
+		},
+	}
 )
 
 func init() {
@@ -207,6 +264,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
+	rootCmd.AddCommand(completionCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
 }
 
@@ -217,8 +275,8 @@ func main() {
 }
 
 // getDefaultSSHDir returns the default SSH directory for the current platform.
-// On Unix-like systems (Linux, macOS), this is ~/.ssh/
-// On Windows, this is %USERPROFILE%\.ssh\
+// On Unix-like systems (Linux, macOS), this is ~/.ssh/.
+// On Windows, this is %USERPROFILE%\.ssh\.
 func getDefaultSSHDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -243,7 +301,9 @@ func generateKeyWithSSHKeygen(keyPath string) error {
 	cmdName := getSSHKeygenCommand()
 	// Run interactively without -N flag so user can set a passphrase
 	// Without -q flag so user can see prompts and confirmations
-	cmd := exec.Command(cmdName, "-t", "ed25519", "-f", keyPath)
+	// Using context.Background() since this is an interactive command with no timeout
+	// G204: cmdName is controlled (only "ssh-keygen" or "ssh-keygen.exe")
+	cmd := exec.CommandContext(context.Background(), cmdName, "-t", "ed25519", "-f", keyPath) //nolint:gosec
 	// Connect stdin, stdout, and stderr to allow full interaction
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -274,13 +334,13 @@ func resolveKeyPath(path string) (string, error) {
 	// component is "." (current directory) or empty
 	cleanedPath := filepath.Clean(path)
 	dir := filepath.Dir(cleanedPath)
-	
+
 	// If the directory is not "." or empty, it's a path with directory components
 	// - don't check default SSH directory
 	if dir != "." && dir != "" {
 		return "", fmt.Errorf("could not open %s: %w", path, os.ErrNotExist)
 	}
-	
+
 	// Also check if the original path explicitly starts with relative path indicators
 	// These are relative paths that should not be checked in default SSH directory
 	// Check for both Unix-style (./, ../) and Windows-style (.\, ..\) prefixes
@@ -330,7 +390,8 @@ func openFileOrStdin(path string) (*os.File, error) {
 		return nil, err
 	}
 
-	f, err := os.Open(resolvedPath)
+	// G304: resolvedPath is user-provided input, which is expected for a CLI tool
+	f, err := os.Open(resolvedPath) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("could not open %s: %w", resolvedPath, err)
 	}
@@ -383,7 +444,11 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 	switch key := key.(type) {
 	case *ed25519.PrivateKey:
 		// Generate 25-word mnemonic with Brave Sync
-		return seedify.ToMnemonicWithBraveSync(key, seedPassphrase)
+		mnemonic, err := seedify.ToMnemonicWithBraveSync(key, seedPassphrase)
+		if err != nil {
+			return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
+		}
+		return mnemonic, nil
 	default:
 		return "", fmt.Errorf("unknown key type: %v", key)
 	}
@@ -523,64 +588,6 @@ func readPassword(msg string) ([]byte, error) {
 	return pass, nil
 }
 
-// generateNostrKeysOnly generates and displays only Nostr keys derived directly from the SSH key.
-func generateNostrKeysOnly(keyPath string, seedPassphrase string) error {
-	// Parse the key once
-	f, err := openFileOrStdin(keyPath)
-	if err != nil {
-		return fmt.Errorf("could not read key: %w", err)
-	}
-	defer f.Close() //nolint:errcheck
-	bts, err := io.ReadAll(f)
-	if err != nil {
-		return fmt.Errorf("could not read key: %w", err)
-	}
-
-	// Check if key is password-protected (required for this command)
-	isProtected, err := isKeyPasswordProtected(bts)
-	if err != nil {
-		// If we can't determine, continue with normal parsing flow
-	} else if !isProtected {
-		// Key is not password-protected - reject it
-		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
-	}
-
-	key, err := parsePrivateKey(bts, nil)
-	if err != nil && isPasswordError(err) {
-		// Key requires a password - ask for it and parse again with the same bytes
-		pass, err := askKeyPassphrase(keyPath)
-		if err != nil {
-			return err
-		}
-		// Parse again with the password using the bytes we already have
-		key, err = parsePrivateKey(bts, pass)
-		if err != nil {
-			return fmt.Errorf("could not parse key with passphrase: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("could not parse key: %w", err)
-	}
-
-	ed25519Key, ok := key.(*ed25519.PrivateKey)
-	if !ok {
-		return fmt.Errorf("unknown key type: %v", key)
-	}
-
-	// Derive Nostr keys directly from the SSH key
-	npub, nsec, err := seedify.DeriveNostrKeysFromEd25519(ed25519Key)
-	if err != nil {
-		return fmt.Errorf("failed to derive Nostr keys: %w", err)
-	}
-
-	// Display Nostr keys
-	fmt.Println("[nostr keys]")
-	fmt.Println()
-	fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
-	fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
-
-	return nil
-}
-
 // generateUnifiedOutput generates seed phrases and wallet derivations for the specified word counts.
 // It displays outputs in a fixed order: seed phrase first, then wallet derivations.
 // When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
@@ -597,10 +604,9 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 	}
 
 	// Check if key is password-protected (required for this command)
+	// If we can't determine protection status (err != nil), continue with normal parsing flow
 	isProtected, err := isKeyPasswordProtected(bts)
-	if err != nil {
-		// If we can't determine, continue with normal parsing flow
-	} else if !isProtected {
+	if err == nil && !isProtected {
 		// Key is not password-protected - reject it
 		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
 	}
@@ -703,4 +709,3 @@ func askKeyPassphrase(path string) ([]byte, error) {
 	defer fmt.Fprintf(os.Stderr, "\n")
 	return readPassword(fmt.Sprintf("Enter the passphrase to unlock %q: ", path))
 }
-

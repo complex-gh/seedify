@@ -25,6 +25,29 @@ import (
 	"github.com/tyler-smith/go-bip39/wordlists"
 )
 
+// Constants for mnemonic generation.
+const (
+	// wordCountBytesSize is the size in bytes for encoding word count (uint16).
+	wordCountBytesSize = 2
+	// polyseedWordCount is the word count for polyseed format mnemonics.
+	polyseedWordCount = 16
+	// bip39MaxWordCount is the maximum word count for BIP39 mnemonics.
+	bip39MaxWordCount = 24
+	// msPerSecond is the number of milliseconds in one second.
+	msPerSecond = 1000
+)
+
+// entropySizeMap maps word count to entropy size in bytes for BIP39.
+//
+//nolint:mnd
+var entropySizeMap = map[int]int{
+	12: 16, // 128 bits
+	15: 20, // 160 bits
+	18: 24, // 192 bits
+	21: 28, // 224 bits
+	24: 32, // 256 bits
+}
+
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create
 // combined entropy. The passphrase is hashed with SHA256 to produce 32 bytes,
 // which are then XORed with the key seed to combine the entropy deterministically.
@@ -90,10 +113,11 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	}
 
 	// Prepend word count to the seed to ensure different word counts generate
-	// completely different words. We encode the word count as a uint16 (2 bytes)
+	// completely different words. We encode the word count as a uint16 (wordCountBytesSize bytes)
 	// to ensure it's properly incorporated into the entropy.
-	wordCountBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(wordCountBytes, uint16(wordCount))
+	// Valid word counts are 12, 15, 16, 18, 21, 24 - all within uint16 range.
+	wordCountBytes := make([]byte, wordCountBytesSize)
+	binary.BigEndian.PutUint16(wordCountBytes, uint16(wordCount)) //nolint:gosec
 
 	// If brave flag is set, prepend the hash of "brave" (similar to word count)
 	var prefixBytes []byte
@@ -115,7 +139,7 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	copy(prefixedSeed[len(prefixBytes):], combinedSeed)
 
 	// Special handling for 16 words - use polyseed format
-	if wordCount == 16 {
+	if wordCount == polyseedWordCount {
 		// Hash the prefixed seed to get exactly 19 bytes (150 bits) for polyseed
 		// We use SHA256 and take the first 19 bytes
 		hash := sha256.Sum256(prefixedSeed)
@@ -127,8 +151,8 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 		}
 		defer seed.Free()
 
-		// Get English language (index 0) for encoding
-		// TODO: Support other languages based on user preference
+		// Get English language (index 0) for encoding.
+		// Note: Other languages may be supported in future versions based on user preference.
 		lang := polyseed.GetLang(0)
 		if lang == nil {
 			return "", fmt.Errorf("could not get polyseed language")
@@ -140,15 +164,7 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 		return mnemonic, nil
 	}
 
-	// Map word count to entropy size in bytes for BIP39
-	entropySizeMap := map[int]int{
-		12: 16, // 128 bits
-		15: 20, // 160 bits
-		18: 24, // 192 bits
-		21: 28, // 224 bits
-		24: 32, // 256 bits
-	}
-
+	// Look up entropy size for the requested word count
 	entropySize, ok := entropySizeMap[wordCount]
 	if !ok {
 		return "", fmt.Errorf("invalid word count: %d (must be 12, 15, 16, 18, 21, or 24)", wordCount)
@@ -204,7 +220,7 @@ func BraveSync25thWordForDate(date time.Time) (string, error) {
 
 	// Calculate the difference in milliseconds, then convert to days
 	deltaInMsec := dateUTC.Sub(epochDate).Milliseconds()
-	deltaInDays := float64(deltaInMsec) / (24 * 60 * 60 * 1000)
+	deltaInDays := float64(deltaInMsec) / (24 * 60 * 60 * msPerSecond)
 	// Round to nearest integer to match JavaScript Math.round() behavior
 	deltaInDaysRounded := int64(math.Round(deltaInDays))
 
@@ -236,7 +252,7 @@ func BraveSync25thWordForDate(date time.Time) (string, error) {
 // with the brave flag set, then appends the current day's 25th word from Brave Sync.
 func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (string, error) {
 	// Generate 24 words with brave flag set
-	mnemonic24, err := ToMnemonicWithLength(key, 24, seedPassphrase, true)
+	mnemonic24, err := ToMnemonicWithLength(key, bip39MaxWordCount, seedPassphrase, true)
 	if err != nil {
 		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
