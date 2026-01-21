@@ -121,6 +121,8 @@ scoops:
       owner: complex-gh
       name: scoop-bucket
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/complex-gh/seedify"
+    license: "MIT"
 
 nix:
   - repository:
