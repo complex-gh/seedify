@@ -1,47 +1,85 @@
-name: GoReleaser
+name: goreleaser
 
 on:
-  push:
-    tags:
-      - 'v*'
-
-permissions:
-  contents: write
-  packages: write
+  workflow_call:
+    inputs:
+      go_version:
+        required: false
+        type: string
+        default: stable
+      upload_artifact:
+        required: false
+        type: boolean
+        default: true
+      lfs:
+        required: false
+        type: boolean
+        default: false
+        description: Whether to download Git-LFS files
+    secrets:
+      HOMEBREW_TAP_GITHUB_TOKEN:
+        required: true
+      NFPM_GPG_KEY:
+        required: false
+      NFPM_DEFAULT_PASSPHRASE:
+        required: false
 
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
+  release:
+    if: ${{ !contains(github.repository, '-internal') }}
+    runs-on:
+      # Use our own large runners with more CPU and RAM for faster builds
+      group: releasers
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+    env:
+      DOCKER_CLI_EXPERIMENTAL: enabled
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+          lfs: ${{ inputs.lfs }}
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.4'
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+          go-version: ${{ inputs.go_version }}
+          cache: true
+          check-latest: true
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      - uses: anchore/sbom-action/download-syft@v0.21.1
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        name: ghcr.io login
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
+      - run: |
+          echo "$NFPM_GPG_KEY" > ${{ runner.temp }}/gpg.key
+        env:
+          NFPM_GPG_KEY: ${{ secrets.NFPM_GPG_KEY }}
+      - uses: samuelmeuli/action-snapcraft@v3
+      - uses: goreleaser/goreleaser-action@v6
         with:
+          version: latest
           distribution: goreleaser
-          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          NFPM_DEFAULT_PASSPHRASE: ${{ secrets.NFPM_DEFAULT_PASSPHRASE }}
+
+      - uses: actions/upload-artifact@v6
+        if: ${{ inputs.upload_artifact == true && always() }}
+        with:
+          retention-days: 30
+          name: dist
+          path: |
+            dist
+
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
