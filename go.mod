@@ -1,6 +1,6 @@
 module github.com/complex-gh/seedify
 
-go 1.25.4
+go 1.25.6
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
