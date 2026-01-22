@@ -98,32 +98,36 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 			hasNostrFlag := nostr
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag
 
-			// Determine which derivations to show
-			// If no flags provided: show all derivations (all word counts + nostr)
-			// If flags provided: show only specified derivations
-			var wordCounts []int
-			var deriveNostr bool
+		// Determine which derivations to show
+		// If no flags provided: show all derivations (all word counts + nostr + brave)
+		// If flags provided: show only specified derivations
+		var wordCounts []int
+		var deriveNostr bool
+		var showBrave bool
 
-			if !hasAnyDerivationFlags {
-				// No flags provided - show all derivations
-				wordCounts = []int{12, 15, 16, 18, 21, 24}
-				deriveNostr = true
-			} else {
-				// Flags provided - show only specified derivations
-				if hasWordsFlag {
-					// Parse word counts from flag
-					parsedCounts, err := parseWordCounts(wordCountStr)
-					if err != nil {
-						return fmt.Errorf("invalid word counts: %w", err)
-					}
-					wordCounts = parsedCounts
+		if !hasAnyDerivationFlags {
+			// No flags provided - show all derivations including brave seed at the end
+			wordCounts = []int{12, 15, 16, 18, 21, 24}
+			deriveNostr = true
+			showBrave = true
+		} else {
+			// Flags provided - show only specified derivations
+			if hasWordsFlag {
+				// Parse word counts from flag
+				parsedCounts, err := parseWordCounts(wordCountStr)
+				if err != nil {
+					return fmt.Errorf("invalid word counts: %w", err)
 				}
-				// Only derive nostr if the flag was explicitly set
-				deriveNostr = hasNostrFlag
+				wordCounts = parsedCounts
 			}
+			// Only derive nostr if the flag was explicitly set
+			deriveNostr = hasNostrFlag
+			// Don't show brave seed when specific flags are provided
+			showBrave = false
+		}
 
-			// Generate unified output (seed phrases + wallet derivations)
-			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr)
+		// Generate unified output (seed phrases + wallet derivations)
+		err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
@@ -591,7 +595,8 @@ func readPassword(msg string) ([]byte, error) {
 // generateUnifiedOutput generates seed phrases and wallet derivations for the specified word counts.
 // It displays outputs in a fixed order: seed phrase first, then wallet derivations.
 // When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
-func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool) error {
+// When showBrave is true, it also displays the brave 24-word seed phrase at the end.
+func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool) error {
 	// Parse the key once
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
@@ -657,13 +662,25 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 			fmt.Println()
 			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
 			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
-			fmt.Println()
 		}
 
-		// Add blank line between word counts (except after the last one)
-		if i < len(wordCounts)-1 {
+		// Add blank line between word counts (except after the last one, unless brave is also shown)
+		if i < len(wordCounts)-1 || showBrave {
 			fmt.Println()
 		}
+	}
+
+	// Display brave 25-word seed phrase at the end if requested
+	if showBrave {
+		braveMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, true)
+		if err != nil {
+			return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
+		}
+
+		fmt.Printf("[25 word brave seed phrase]\n")
+		fmt.Println()
+		fmt.Println(braveMnemonic)
+		fmt.Println()
 	}
 
 	return nil
