@@ -646,24 +646,24 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		fmt.Println(mnemonic)
 		fmt.Println()
 
+		// Derive and display nostr keys for 12-word and 24-word seed phrases only
+		if deriveNostr && (count == 12 || count == 24) {
+			npub, nsec, err := seedify.DeriveNostrKeys(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, err)
+			}
+
+			fmt.Println("[nostr keys]")
+			fmt.Println()
+			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
+			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+			fmt.Println()
+		}
+
 		// Add blank line between word counts (except after the last one)
 		if i < len(wordCounts)-1 {
 			fmt.Println()
 		}
-	}
-
-	// Derive and display wallet outputs in fixed order
-	// Nostr keys are derived directly from the SSH key, not from seed phrases
-	if deriveNostr {
-		npub, nsec, err := seedify.DeriveNostrKeysFromEd25519(ed25519Key)
-		if err != nil {
-			return fmt.Errorf("failed to derive Nostr keys: %w", err)
-		}
-
-		fmt.Println("[nostr keys]")
-		fmt.Println()
-		fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
-		fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
 	}
 
 	return nil
