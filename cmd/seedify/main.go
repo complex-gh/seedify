@@ -653,7 +653,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, err)
 			}
 
-			fmt.Println("[nostr keys]")
+			fmt.Printf("[nostr keys from %d word seed]\n", count)
 			fmt.Println()
 			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
 			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
