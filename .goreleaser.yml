@@ -108,6 +108,10 @@ brews:
       owner: complex-gh
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/complex-gh/seedify"
+    description: "Convert SSH keys to BIP-39 seed phrases"
+    license: "MIT"
     goarm: 7
     install: |-
       bin.install "seedify"
