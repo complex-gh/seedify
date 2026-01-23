@@ -54,13 +54,20 @@ var (
 	monero         bool
 
 	rootCmd = &cobra.Command{
-		Use:   "seedify",
+		Use:   "seedify <key-path>",
 		Short: "Generate a seed phrase from an SSH key",
 		Long: `Generate a seed phrase from an SSH key.
 
 Valid word counts are: 12, 15, 16, 18, 21, or 24.
 - 12, 15, 18, 21, 24 words use BIP39 format
-- 16 words use Polyseed format`,
+- 16 words use Polyseed format
+
+SECURITY TIP: Add a space before the command to prevent it from being
+saved in your shell history. For example:
+    seedify ~/.ssh/id_ed25519
+    ^ (note the leading space)
+Most shells (bash, zsh) are configured to ignore commands that start
+with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 		Example: `  seedify ~/.ssh/id_ed25519
   seedify ~/.ssh/id_ed25519 --words 12
   seedify ~/.ssh/id_ed25519 --words 12,24
@@ -72,7 +79,14 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// If no arguments provided and stdin is not a pipe, show help
+			if len(args) == 0 {
+				if fi, _ := os.Stdin.Stat(); (fi.Mode() & os.ModeNamedPipe) == 0 {
+					return cmd.Help()
+				}
+			}
+
 			if err := setLanguage(language); err != nil {
 				return err
 			}
