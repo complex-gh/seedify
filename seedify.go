@@ -388,7 +388,7 @@ func DeriveBitcoinAddress(mnemonic string, bip39Passphrase string) (string, erro
 	// 0' = account
 	// 0 = change (external)
 	// 0 = address index
-	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 44)
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 44) //nolint:mnd
 	if err != nil {
 		return "", fmt.Errorf("failed to derive purpose: %w", err)
 	}
@@ -459,7 +459,7 @@ func DeriveBitcoinAddressSegwit(mnemonic string, bip39Passphrase string) (string
 	// 0' = account
 	// 0 = change (external)
 	// 0 = address index
-	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 49)
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 49) //nolint:mnd
 	if err != nil {
 		return "", fmt.Errorf("failed to derive purpose: %w", err)
 	}
@@ -541,7 +541,7 @@ func DeriveBitcoinAddressNativeSegwit(mnemonic string, bip39Passphrase string) (
 	// 0' = account
 	// 0 = change (external)
 	// 0 = address index
-	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 84)
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 84) //nolint:mnd
 	if err != nil {
 		return "", fmt.Errorf("failed to derive purpose: %w", err)
 	}
@@ -612,7 +612,7 @@ func DeriveBitcoinAddressTaproot(mnemonic string, bip39Passphrase string) (strin
 	// 0' = account
 	// 0 = change (external)
 	// 0 = address index
-	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 86)
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 86) //nolint:mnd
 	if err != nil {
 		return "", fmt.Errorf("failed to derive purpose: %w", err)
 	}
@@ -762,10 +762,10 @@ func deriveEd25519Key(seed []byte, path []uint32) []byte {
 	// Derive each level of the path (all hardened for Ed25519)
 	for _, index := range path {
 		// Add hardened offset (0x80000000)
-		hardenedIndex := index + 0x80000000
+		hardenedIndex := index + 0x80000000 //nolint:mnd
 
 		// Prepare data for HMAC: 0x00 || key || index
-		data := make([]byte, 37)
+		data := make([]byte, 37) //nolint:mnd
 		data[0] = 0x00
 		copy(data[1:33], key)
 		binary.BigEndian.PutUint32(data[33:], hardenedIndex)
@@ -833,7 +833,7 @@ func DeriveMoneroAddress(mnemonic string) (string, error) {
 
 	// Construct the address bytes: prefix (1) + spend pubkey (32) + view pubkey (32) + checksum (4)
 	// Mainnet primary address prefix is 0x12
-	addrData := make([]byte, 65) // 1 + 32 + 32
+	addrData := make([]byte, 65) //nolint:mnd // 1 + 32 + 32
 	addrData[0] = 0x12           // Mainnet primary address prefix
 	copy(addrData[1:33], spendPubKey)
 	copy(addrData[33:65], viewPubKey)
@@ -871,7 +871,7 @@ func reduceToScalar(keyBytes []byte) ([]byte, error) {
 	// Implement sc_reduce32: reduce a 256-bit value modulo L
 	// For simplicity, we clear bits to ensure the value is definitely < L.
 	// L ≈ 2^252, so clearing the top 4 bits ensures our value < 2^252 < L.
-	result := make([]byte, 32)
+	result := make([]byte, 32) //nolint:mnd
 	copy(result, hash)
 
 	// Clear the top 4 bits of byte 31 (little-endian, so byte 31 is the MSB)

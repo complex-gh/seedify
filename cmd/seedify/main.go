@@ -149,10 +149,10 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					// BTC, ETH, SOL need 24 words; XMR needs 16 words
 					wordCounts = []int{}
 					if monero {
-						wordCounts = append(wordCounts, 16)
+						wordCounts = append(wordCounts, 16) //nolint:mnd
 					}
 					if bitcoin || ethereum || solana {
-						wordCounts = append(wordCounts, 24)
+						wordCounts = append(wordCounts, 24) //nolint:mnd
 					}
 				}
 				// Only derive nostr if the flag was explicitly set
@@ -724,7 +724,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		}
 
 		// Derive and display crypto addresses for 24-word seed phrase
-		if count == 24 {
+		if count == 24 { //nolint:mnd,nestif
 			// Bitcoin addresses (all types)
 			if deriveBtc {
 				// Legacy P2PKH (BIP44) - starts with "1"
@@ -795,7 +795,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 	// Display brave 25-word seed phrase at the end if requested
 	if showBrave {
-		braveMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, true)
+		braveMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, true) //nolint:mnd
 		if err != nil {
 			return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 		}

@@ -40,7 +40,7 @@ func TestToMnemonicWithLength_AllFormats(t *testing.T) {
 
 	validCounts := []int{12, 15, 16, 18, 21, 24}
 
-		for _, count := range validCounts {
+	for _, count := range validCounts {
 		t.Run(string(rune(count)), func(t *testing.T) {
 			is := is.New(t)
 			mnemonic, err := ToMnemonicWithLength(&key, count, "", false)
