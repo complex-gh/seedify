@@ -48,15 +48,26 @@ var (
 	seedPassphrase string
 	brave          bool
 	nostr          bool
+	bitcoin        bool
+	ethereum       bool
+	solana         bool
+	monero         bool
 
 	rootCmd = &cobra.Command{
-		Use:   "seedify",
+		Use:   "seedify <key-path>",
 		Short: "Generate a seed phrase from an SSH key",
 		Long: `Generate a seed phrase from an SSH key.
 
 Valid word counts are: 12, 15, 16, 18, 21, or 24.
 - 12, 15, 18, 21, 24 words use BIP39 format
-- 16 words use Polyseed format`,
+- 16 words use Polyseed format
+
+SECURITY TIP: Add a space before the command to prevent it from being
+saved in your shell history. For example:
+    seedify ~/.ssh/id_ed25519
+    ^ (note the leading space)
+Most shells (bash, zsh) are configured to ignore commands that start
+with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 		Example: `  seedify ~/.ssh/id_ed25519
   seedify ~/.ssh/id_ed25519 --words 12
   seedify ~/.ssh/id_ed25519 --words 12,24
@@ -68,7 +79,14 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// If no arguments provided and stdin is not a pipe, show help
+			if len(args) == 0 {
+				if fi, _ := os.Stdin.Stat(); (fi.Mode() & os.ModeNamedPipe) == 0 {
+					return cmd.Help()
+				}
+			}
+
 			if err := setLanguage(language); err != nil {
 				return err
 			}
@@ -96,18 +114,27 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 			// Check if any derivation flags were explicitly provided
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag
+			hasCryptoFlags := bitcoin || ethereum || solana || monero
+			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			// Determine which derivations to show
-			// If no flags provided: show all derivations (all word counts + nostr)
+			// If no flags provided: show all derivations (all word counts + nostr + brave)
 			// If flags provided: show only specified derivations
 			var wordCounts []int
 			var deriveNostr bool
+			var showBrave bool
+			var deriveBtc, deriveEth, deriveSol, deriveXmr bool
 
 			if !hasAnyDerivationFlags {
-				// No flags provided - show all derivations
+				// No flags provided - show all derivations including brave seed at the end
 				wordCounts = []int{12, 15, 16, 18, 21, 24}
 				deriveNostr = true
+				showBrave = true
+				// Derive all crypto addresses by default
+				deriveBtc = true
+				deriveEth = true
+				deriveSol = true
+				deriveXmr = true
 			} else {
 				// Flags provided - show only specified derivations
 				if hasWordsFlag {
@@ -117,13 +144,30 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 						return fmt.Errorf("invalid word counts: %w", err)
 					}
 					wordCounts = parsedCounts
+				} else if hasCryptoFlags {
+					// If crypto flags are set but no word counts, ensure we have the needed word counts
+					// BTC, ETH, SOL need 24 words; XMR needs 16 words
+					wordCounts = []int{}
+					if monero {
+						wordCounts = append(wordCounts, 16) //nolint:mnd
+					}
+					if bitcoin || ethereum || solana {
+						wordCounts = append(wordCounts, 24) //nolint:mnd
+					}
 				}
 				// Only derive nostr if the flag was explicitly set
 				deriveNostr = hasNostrFlag
+				// Don't show brave seed when specific flags are provided
+				showBrave = false
+				// Set crypto derivation flags
+				deriveBtc = bitcoin
+				deriveEth = ethereum
+				deriveSol = solana
+				deriveXmr = monero
 			}
 
 			// Generate unified output (seed phrases + wallet derivations)
-			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr)
+			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
@@ -262,6 +306,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
 	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync")
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
+	rootCmd.PersistentFlags().BoolVar(&bitcoin, "btc", false, "Derive Bitcoin address from 24-word seed phrase")
+	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
+	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
+	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -591,7 +639,9 @@ func readPassword(msg string) ([]byte, error) {
 // generateUnifiedOutput generates seed phrases and wallet derivations for the specified word counts.
 // It displays outputs in a fixed order: seed phrase first, then wallet derivations.
 // When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
-func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool) error {
+// When showBrave is true, it also displays the brave 24-word seed phrase at the end.
+// Crypto address flags (deriveBtc, deriveEth, deriveSol, deriveXmr) control which addresses to derive.
+func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool, deriveBtc, deriveEth, deriveSol, deriveXmr bool) error {
 	// Parse the key once
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
@@ -646,24 +696,114 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		fmt.Println(mnemonic)
 		fmt.Println()
 
-		// Add blank line between word counts (except after the last one)
-		if i < len(wordCounts)-1 {
+		// Derive and display Monero address for 16-word polyseed
+		if count == 16 && deriveXmr {
+			xmrAddr, err := seedify.DeriveMoneroAddress(mnemonic)
+			if err != nil {
+				return fmt.Errorf("failed to derive Monero address from 16-word polyseed: %w", err)
+			}
+
+			fmt.Printf("[monero address from 16 word polyseed]\n")
+			fmt.Println()
+			fmt.Println(xmrAddr)
+			fmt.Println()
+		}
+
+		// Derive and display nostr keys for 12-word and 24-word seed phrases only
+		if deriveNostr && (count == 12 || count == 24) {
+			npub, nsec, err := seedify.DeriveNostrKeys(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, err)
+			}
+
+			fmt.Printf("[nostr keys from %d word seed]\n", count)
+			fmt.Println()
+			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
+			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+			fmt.Println()
+		}
+
+		// Derive and display crypto addresses for 24-word seed phrase
+		if count == 24 { //nolint:mnd,nestif
+			// Bitcoin addresses (all types)
+			if deriveBtc {
+				// Legacy P2PKH (BIP44) - starts with "1"
+				btcLegacy, err := seedify.DeriveBitcoinAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin legacy address: %w", err)
+				}
+
+				// Nested SegWit P2SH-P2WPKH (BIP49) - starts with "3"
+				btcSegwit, err := seedify.DeriveBitcoinAddressSegwit(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin SegWit address: %w", err)
+				}
+
+				// Native SegWit P2WPKH (BIP84) - starts with "bc1q"
+				btcNative, err := seedify.DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
+				}
+
+				// Taproot P2TR (BIP86) - starts with "bc1p"
+				btcTaproot, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
+				}
+
+				fmt.Printf("[bitcoin addresses from 24 word seed]\n")
+				fmt.Println()
+				fmt.Printf("%s (legacy P2PKH - BIP44)\n", btcLegacy)
+				fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", btcSegwit)
+				fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", btcNative)
+				fmt.Printf("%s (taproot P2TR - BIP86)\n", btcTaproot)
+				fmt.Println()
+			}
+
+			// Ethereum address
+			if deriveEth {
+				ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Ethereum address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[ethereum address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(ethAddr)
+				fmt.Println()
+			}
+
+			// Solana address
+			if deriveSol {
+				solAddr, err := seedify.DeriveSolanaAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Solana address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[solana address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(solAddr)
+				fmt.Println()
+			}
+		}
+
+		// Add blank line between word counts (except after the last one, unless brave is also shown)
+		if i < len(wordCounts)-1 || showBrave {
 			fmt.Println()
 		}
 	}
 
-	// Derive and display wallet outputs in fixed order
-	// Nostr keys are derived directly from the SSH key, not from seed phrases
-	if deriveNostr {
-		npub, nsec, err := seedify.DeriveNostrKeysFromEd25519(ed25519Key)
+	// Display brave 25-word seed phrase at the end if requested
+	if showBrave {
+		braveMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, true) //nolint:mnd
 		if err != nil {
-			return fmt.Errorf("failed to derive Nostr keys: %w", err)
+			return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 		}
 
-		fmt.Println("[nostr keys]")
+		fmt.Printf("[25 word brave seed phrase]\n")
 		fmt.Println()
-		fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
-		fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+		fmt.Println(braveMnemonic)
+		fmt.Println()
 	}
 
 	return nil
