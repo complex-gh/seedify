@@ -117,57 +117,57 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			hasCryptoFlags := bitcoin || ethereum || solana || monero
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
-		// Determine which derivations to show
-		// If no flags provided: show all derivations (all word counts + nostr + brave)
-		// If flags provided: show only specified derivations
-		var wordCounts []int
-		var deriveNostr bool
-		var showBrave bool
-		var deriveBtc, deriveEth, deriveSol, deriveXmr bool
+			// Determine which derivations to show
+			// If no flags provided: show all derivations (all word counts + nostr + brave)
+			// If flags provided: show only specified derivations
+			var wordCounts []int
+			var deriveNostr bool
+			var showBrave bool
+			var deriveBtc, deriveEth, deriveSol, deriveXmr bool
 
-		if !hasAnyDerivationFlags {
-			// No flags provided - show all derivations including brave seed at the end
-			wordCounts = []int{12, 15, 16, 18, 21, 24}
-			deriveNostr = true
-			showBrave = true
-			// Derive all crypto addresses by default
-			deriveBtc = true
-			deriveEth = true
-			deriveSol = true
-			deriveXmr = true
-		} else {
-			// Flags provided - show only specified derivations
-			if hasWordsFlag {
-				// Parse word counts from flag
-				parsedCounts, err := parseWordCounts(wordCountStr)
-				if err != nil {
-					return fmt.Errorf("invalid word counts: %w", err)
+			if !hasAnyDerivationFlags {
+				// No flags provided - show all derivations including brave seed at the end
+				wordCounts = []int{12, 15, 16, 18, 21, 24}
+				deriveNostr = true
+				showBrave = true
+				// Derive all crypto addresses by default
+				deriveBtc = true
+				deriveEth = true
+				deriveSol = true
+				deriveXmr = true
+			} else {
+				// Flags provided - show only specified derivations
+				if hasWordsFlag {
+					// Parse word counts from flag
+					parsedCounts, err := parseWordCounts(wordCountStr)
+					if err != nil {
+						return fmt.Errorf("invalid word counts: %w", err)
+					}
+					wordCounts = parsedCounts
+				} else if hasCryptoFlags {
+					// If crypto flags are set but no word counts, ensure we have the needed word counts
+					// BTC, ETH, SOL need 24 words; XMR needs 16 words
+					wordCounts = []int{}
+					if monero {
+						wordCounts = append(wordCounts, 16)
+					}
+					if bitcoin || ethereum || solana {
+						wordCounts = append(wordCounts, 24)
+					}
 				}
-				wordCounts = parsedCounts
-			} else if hasCryptoFlags {
-				// If crypto flags are set but no word counts, ensure we have the needed word counts
-				// BTC, ETH, SOL need 24 words; XMR needs 16 words
-				wordCounts = []int{}
-				if monero {
-					wordCounts = append(wordCounts, 16)
-				}
-				if bitcoin || ethereum || solana {
-					wordCounts = append(wordCounts, 24)
-				}
+				// Only derive nostr if the flag was explicitly set
+				deriveNostr = hasNostrFlag
+				// Don't show brave seed when specific flags are provided
+				showBrave = false
+				// Set crypto derivation flags
+				deriveBtc = bitcoin
+				deriveEth = ethereum
+				deriveSol = solana
+				deriveXmr = monero
 			}
-			// Only derive nostr if the flag was explicitly set
-			deriveNostr = hasNostrFlag
-			// Don't show brave seed when specific flags are provided
-			showBrave = false
-			// Set crypto derivation flags
-			deriveBtc = bitcoin
-			deriveEth = ethereum
-			deriveSol = solana
-			deriveXmr = monero
-		}
 
-		// Generate unified output (seed phrases + wallet derivations)
-		err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveXmr)
+			// Generate unified output (seed phrases + wallet derivations)
+			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}

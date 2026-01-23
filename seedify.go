@@ -726,10 +726,7 @@ func DeriveSolanaAddress(mnemonic string, bip39Passphrase string) (string, error
 
 	// Derive using SLIP-0010 for Ed25519
 	// Path: m/44'/501'/0'/0' (all hardened for Ed25519)
-	key, err := deriveEd25519Key(seed, []uint32{44, 501, 0, 0})
-	if err != nil {
-		return "", fmt.Errorf("failed to derive key: %w", err)
-	}
+	key := deriveEd25519Key(seed, []uint32{44, 501, 0, 0})
 
 	// Generate Ed25519 public key from the derived private key
 	privateKey := ed25519.NewKeyFromSeed(key)
@@ -749,8 +746,7 @@ func DeriveSolanaAddress(mnemonic string, bip39Passphrase string) (string, error
 //
 // Returns:
 //   - key: The derived 32-byte Ed25519 private key seed
-//   - error: Any error that occurred during derivation
-func deriveEd25519Key(seed []byte, path []uint32) ([]byte, error) {
+func deriveEd25519Key(seed []byte, path []uint32) []byte {
 	// SLIP-0010: Use "ed25519 seed" as the HMAC key for master key generation
 	hmacKey := []byte("ed25519 seed")
 
@@ -784,7 +780,7 @@ func deriveEd25519Key(seed []byte, path []uint32) ([]byte, error) {
 		chainCode = sum[32:]
 	}
 
-	return key, nil
+	return key
 }
 
 // DeriveMoneroAddress derives a Monero address from a polyseed mnemonic phrase.
