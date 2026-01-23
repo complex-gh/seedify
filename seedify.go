@@ -21,9 +21,11 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/chekist32/go-monero/utils"
 	polyseed "github.com/complex-gh/polyseed_go"
 	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
@@ -422,6 +424,237 @@ func DeriveBitcoinAddress(mnemonic string, bip39Passphrase string) (string, erro
 	addr, err := btcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	if err != nil {
 		return "", fmt.Errorf("failed to create address: %w", err)
+	}
+
+	return addr.EncodeAddress(), nil
+}
+
+// DeriveBitcoinAddressSegwit derives a P2SH-P2WPKH (Nested SegWit) Bitcoin address.
+// The function follows BIP49 standard with derivation path m/49'/0'/0'/0/0.
+// It returns a P2SH-wrapped SegWit address (starts with "3") for Bitcoin mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Bitcoin P2SH-P2WPKH address (starts with "3")
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinAddressSegwit(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP49 path: m/49'/0'/0'/0/0
+	// 49' = purpose (BIP49 - P2SH-P2WPKH)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 0 = change (external)
+	// 0 = address index
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 49)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive purpose: %w", err)
+	}
+
+	coinType, err := purpose.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive coin type: %w", err)
+	}
+
+	account, err := coinType.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive account: %w", err)
+	}
+
+	change, err := account.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive change: %w", err)
+	}
+
+	addressIndex, err := change.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive address index: %w", err)
+	}
+
+	// Get the public key
+	pubKey, err := addressIndex.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create P2WPKH (witness) address first
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	witnessAddr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create witness address: %w", err)
+	}
+
+	// Wrap in P2SH to create P2SH-P2WPKH address (starts with "3")
+	script, err := txscript.PayToAddrScript(witnessAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to create script: %w", err)
+	}
+
+	addr, err := btcutil.NewAddressScriptHash(script, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create P2SH address: %w", err)
+	}
+
+	return addr.EncodeAddress(), nil
+}
+
+// DeriveBitcoinAddressNativeSegwit derives a P2WPKH (Native SegWit) Bitcoin address.
+// The function follows BIP84 standard with derivation path m/84'/0'/0'/0/0.
+// It returns a Bech32 address (starts with "bc1q") for Bitcoin mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Bitcoin P2WPKH address (starts with "bc1q")
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinAddressNativeSegwit(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP84 path: m/84'/0'/0'/0/0
+	// 84' = purpose (BIP84 - P2WPKH native SegWit)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 0 = change (external)
+	// 0 = address index
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 84)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive purpose: %w", err)
+	}
+
+	coinType, err := purpose.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive coin type: %w", err)
+	}
+
+	account, err := coinType.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive account: %w", err)
+	}
+
+	change, err := account.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive change: %w", err)
+	}
+
+	addressIndex, err := change.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive address index: %w", err)
+	}
+
+	// Get the public key and create P2WPKH address
+	pubKey, err := addressIndex.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create P2WPKH address (starts with "bc1q")
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create address: %w", err)
+	}
+
+	return addr.EncodeAddress(), nil
+}
+
+// DeriveBitcoinAddressTaproot derives a P2TR (Taproot) Bitcoin address.
+// The function follows BIP86 standard with derivation path m/86'/0'/0'/0/0.
+// It returns a Bech32m address (starts with "bc1p") for Bitcoin mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Bitcoin P2TR address (starts with "bc1p")
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinAddressTaproot(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP86 path: m/86'/0'/0'/0/0
+	// 86' = purpose (BIP86 - P2TR Taproot)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 0 = change (external)
+	// 0 = address index
+	purpose, err := masterKey.Derive(hdkeychain.HardenedKeyStart + 86)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive purpose: %w", err)
+	}
+
+	coinType, err := purpose.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive coin type: %w", err)
+	}
+
+	account, err := coinType.Derive(hdkeychain.HardenedKeyStart + 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive account: %w", err)
+	}
+
+	change, err := account.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive change: %w", err)
+	}
+
+	addressIndex, err := change.Derive(0)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive address index: %w", err)
+	}
+
+	// Get the public key for Taproot
+	pubKey, err := addressIndex.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// For Taproot, we use the x-only public key (32 bytes)
+	// The internal key is tweaked with an empty merkle root for key-path spending
+	internalKey := pubKey
+
+	// Compute the taproot tweak: t = tagged_hash("TapTweak", pubkey)
+	// Then compute the output key: Q = P + t*G
+	taprootKey := txscript.ComputeTaprootKeyNoScript(internalKey)
+
+	// Create P2TR address (starts with "bc1p")
+	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create taproot address: %w", err)
 	}
 
 	return addr.EncodeAddress(), nil

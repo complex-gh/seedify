@@ -711,16 +711,38 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 		// Derive and display crypto addresses for 24-word seed phrase
 		if count == 24 {
-			// Bitcoin address
+			// Bitcoin addresses (all types)
 			if deriveBtc {
-				btcAddr, err := seedify.DeriveBitcoinAddress(mnemonic, "")
+				// Legacy P2PKH (BIP44) - starts with "1"
+				btcLegacy, err := seedify.DeriveBitcoinAddress(mnemonic, "")
 				if err != nil {
-					return fmt.Errorf("failed to derive Bitcoin address from 24-word seed: %w", err)
+					return fmt.Errorf("failed to derive Bitcoin legacy address: %w", err)
 				}
 
-				fmt.Printf("[bitcoin address from 24 word seed]\n")
+				// Nested SegWit P2SH-P2WPKH (BIP49) - starts with "3"
+				btcSegwit, err := seedify.DeriveBitcoinAddressSegwit(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin SegWit address: %w", err)
+				}
+
+				// Native SegWit P2WPKH (BIP84) - starts with "bc1q"
+				btcNative, err := seedify.DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
+				}
+
+				// Taproot P2TR (BIP86) - starts with "bc1p"
+				btcTaproot, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
+				}
+
+				fmt.Printf("[bitcoin addresses from 24 word seed]\n")
 				fmt.Println()
-				fmt.Println(btcAddr)
+				fmt.Printf("%s (legacy P2PKH - BIP44)\n", btcLegacy)
+				fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", btcSegwit)
+				fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", btcNative)
+				fmt.Printf("%s (taproot P2TR - BIP86)\n", btcTaproot)
 				fmt.Println()
 			}
 

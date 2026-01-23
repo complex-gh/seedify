@@ -285,6 +285,104 @@ func TestDeriveBitcoinAddress_DifferentMnemonicsProduceDifferentAddresses(t *tes
 	is.True(addr1 != addr2)
 }
 
+// TestDeriveBitcoinAddressSegwit_ValidFormat tests that DeriveBitcoinAddressSegwit produces valid P2SH addresses
+func TestDeriveBitcoinAddressSegwit_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr, err := DeriveBitcoinAddressSegwit(mnemonic, "")
+	is.NoErr(err)
+
+	// P2SH-P2WPKH address should start with "3"
+	is.True(strings.HasPrefix(addr, "3"))
+}
+
+// TestDeriveBitcoinAddressNativeSegwit_ValidFormat tests that DeriveBitcoinAddressNativeSegwit produces valid bc1q addresses
+func TestDeriveBitcoinAddressNativeSegwit_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr, err := DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	is.NoErr(err)
+
+	// Native SegWit P2WPKH address should start with "bc1q"
+	is.True(strings.HasPrefix(addr, "bc1q"))
+}
+
+// TestDeriveBitcoinAddressTaproot_ValidFormat tests that DeriveBitcoinAddressTaproot produces valid bc1p addresses
+func TestDeriveBitcoinAddressTaproot_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr, err := DeriveBitcoinAddressTaproot(mnemonic, "")
+	is.NoErr(err)
+
+	// Taproot P2TR address should start with "bc1p"
+	is.True(strings.HasPrefix(addr, "bc1p"))
+}
+
+// TestAllBitcoinAddressTypes_Deterministic verifies that all Bitcoin address types are deterministic
+func TestAllBitcoinAddressTypes_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	// Derive all address types twice
+	legacy1, err := DeriveBitcoinAddress(mnemonic, "")
+	is.NoErr(err)
+	legacy2, err := DeriveBitcoinAddress(mnemonic, "")
+	is.NoErr(err)
+	is.Equal(legacy1, legacy2)
+
+	segwit1, err := DeriveBitcoinAddressSegwit(mnemonic, "")
+	is.NoErr(err)
+	segwit2, err := DeriveBitcoinAddressSegwit(mnemonic, "")
+	is.NoErr(err)
+	is.Equal(segwit1, segwit2)
+
+	native1, err := DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	is.NoErr(err)
+	native2, err := DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	is.NoErr(err)
+	is.Equal(native1, native2)
+
+	taproot1, err := DeriveBitcoinAddressTaproot(mnemonic, "")
+	is.NoErr(err)
+	taproot2, err := DeriveBitcoinAddressTaproot(mnemonic, "")
+	is.NoErr(err)
+	is.Equal(taproot1, taproot2)
+}
+
+// TestAllBitcoinAddressTypes_DifferentFromEachOther verifies that different BIP standards produce different addresses
+func TestAllBitcoinAddressTypes_DifferentFromEachOther(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	legacy, err := DeriveBitcoinAddress(mnemonic, "")
+	is.NoErr(err)
+
+	segwit, err := DeriveBitcoinAddressSegwit(mnemonic, "")
+	is.NoErr(err)
+
+	native, err := DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	is.NoErr(err)
+
+	taproot, err := DeriveBitcoinAddressTaproot(mnemonic, "")
+	is.NoErr(err)
+
+	// All should be different from each other
+	is.True(legacy != segwit)
+	is.True(legacy != native)
+	is.True(legacy != taproot)
+	is.True(segwit != native)
+	is.True(segwit != taproot)
+	is.True(native != taproot)
+}
+
 // TestDeriveEthereumAddress_ValidFormat tests that DeriveEthereumAddress produces valid ETH addresses
 func TestDeriveEthereumAddress_ValidFormat(t *testing.T) {
 	is := is.New(t)
