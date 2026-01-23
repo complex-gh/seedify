@@ -28,7 +28,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/chekist32/go-monero/utils"
 	polyseed "github.com/complex-gh/polyseed_go"
-	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
+	hdwallet "github.com/stephenlacy/go-ethereum-hdwallet"
 	"github.com/mr-tron/base58"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip06"

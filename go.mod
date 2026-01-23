@@ -12,13 +12,13 @@ require (
 	github.com/matryer/is v1.4.1
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-tty v0.0.7
-	github.com/miguelmota/go-ethereum-hdwallet v0.1.3
 	github.com/mr-tron/base58 v1.2.0
 	github.com/muesli/mango-cobra v1.3.0
 	github.com/muesli/roff v0.1.0
 	github.com/muesli/termenv v0.16.0
 	github.com/nbd-wtf/go-nostr v0.52.3
 	github.com/spf13/cobra v1.10.2
+	github.com/stephenlacy/go-ethereum-hdwallet v0.0.0-20230913225845-a4fa94429863
 	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/crypto v0.46.0
 	golang.org/x/term v0.38.0
