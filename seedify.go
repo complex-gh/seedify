@@ -28,11 +28,11 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/chekist32/go-monero/utils"
 	polyseed "github.com/complex-gh/polyseed_go"
-	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
 	"github.com/mr-tron/base58"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip06"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	hdwallet "github.com/stephenlacy/go-ethereum-hdwallet"
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
 )

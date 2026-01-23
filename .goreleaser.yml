@@ -20,7 +20,7 @@ before:
     - sh -c 'go run ./cmd/seedify man | gzip -c >./manpages/seedify.1.gz'
 
 gomod:
-  proxy: true
+  proxy: false
 
 builds:
   - id: seedify
