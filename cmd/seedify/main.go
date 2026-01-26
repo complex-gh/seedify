@@ -795,7 +795,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 	// Display brave 25-word seed phrase at the end if requested
 	if showBrave {
-		braveMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, true) //nolint:mnd
+		braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 		if err != nil {
 			return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 		}
