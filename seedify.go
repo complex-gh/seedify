@@ -880,3 +880,869 @@ func reduceToScalar(keyBytes []byte) ([]byte, error) {
 
 	return result, nil
 }
+
+// Extended key version bytes for SLIP-0132 encoding.
+// These are used to encode extended keys with version prefixes that indicate
+// the derivation path standard (BIP44, BIP49, BIP84).
+const (
+	// BIP49 SegWit (ypub/yprv)
+	ypubVersion uint32 = 0x049D7CB2
+	yprvVersion uint32 = 0x049D7878
+	// BIP84 Native SegWit (zpub/zprv)
+	zpubVersion uint32 = 0x04B24746
+	zprvVersion uint32 = 0x04B2430C
+	// BIP48 Multisig P2SH-P2WSH (Ypub/Yprv) - uppercase denotes multisig
+	multisigYpubVersion uint32 = 0x0295B43F
+	multisigYprvVersion uint32 = 0x0295B005
+	// BIP48 Multisig P2WSH (Zpub/Zprv) - uppercase denotes multisig
+	multisigZpubVersion uint32 = 0x02AA7ED3
+	multisigZprvVersion uint32 = 0x02AA7A99
+)
+
+// BitcoinKeys contains the address and private key (WIF) for a Bitcoin derivation.
+type BitcoinKeys struct {
+	Address    string
+	PrivateWIF string
+}
+
+// BitcoinExtendedKeys contains the extended public and private keys at the account level.
+type BitcoinExtendedKeys struct {
+	ExtendedPublicKey  string
+	ExtendedPrivateKey string
+}
+
+// deriveBIP32Path derives a key at the given BIP32 path from a master key.
+// The path is specified as a slice of uint32 values, where values >= 0x80000000
+// are hardened derivations.
+func deriveBIP32Path(masterKey *hdkeychain.ExtendedKey, path []uint32) (*hdkeychain.ExtendedKey, error) {
+	key := masterKey
+	var err error
+	for _, index := range path {
+		key, err = key.Derive(index)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive at index %d: %w", index, err)
+		}
+	}
+	return key, nil
+}
+
+// DeriveBitcoinLegacyKeys derives a Bitcoin Legacy P2PKH address and its WIF private key.
+// The function follows BIP44 standard with derivation path m/44'/0'/0'/0/0.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinLegacyKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP44 path: m/44'/0'/0'/0/0
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 44, // purpose
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key and create P2PKH address
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	addr, err := btcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinSegwitKeys derives a Bitcoin SegWit P2SH-P2WPKH address and its WIF private key.
+// The function follows BIP49 standard with derivation path m/49'/0'/0'/0/0.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinSegwitKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP49 path: m/49'/0'/0'/0/0
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 49, // purpose (BIP49)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create P2WPKH (witness) address first
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	witnessAddr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create witness address: %w", err)
+	}
+
+	// Wrap in P2SH to create P2SH-P2WPKH address (starts with "3")
+	script, err := txscript.PayToAddrScript(witnessAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create script: %w", err)
+	}
+	addr, err := btcutil.NewAddressScriptHash(script, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2SH address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinNativeSegwitKeys derives a Bitcoin Native SegWit P2WPKH address and its WIF private key.
+// The function follows BIP84 standard with derivation path m/84'/0'/0'/0/0.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinNativeSegwitKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP84 path: m/84'/0'/0'/0/0
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 84, // purpose (BIP84)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key and create P2WPKH address
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// encodeExtendedKey encodes an extended key with a custom version prefix.
+// This is used to create ypub/yprv, zpub/zprv, and multisig variants.
+func encodeExtendedKey(key *hdkeychain.ExtendedKey, version uint32) string {
+	// Get the serialized key (78 bytes)
+	serialized := key.String()
+
+	// Decode the base58check (extended keys use 4-byte version, not 1-byte)
+	decoded, err := base58.Decode(serialized)
+	if err != nil {
+		return ""
+	}
+
+	// Verify we have enough data (78 bytes + 4 bytes checksum = 82 bytes)
+	if len(decoded) < 82 { //nolint:mnd
+		return ""
+	}
+
+	// Get payload without checksum
+	payload := decoded[:78] //nolint:mnd
+
+	// Replace the first 4 bytes (version) with our custom version
+	versionBytes := make([]byte, 4) //nolint:mnd
+	binary.BigEndian.PutUint32(versionBytes, version)
+	copy(payload[0:4], versionBytes)
+
+	// Calculate new checksum (double SHA256, first 4 bytes)
+	firstHash := sha256.Sum256(payload)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+
+	// Append checksum and encode
+	result := append(payload, checksum...)
+
+	return base58.Encode(result)
+}
+
+// DeriveBitcoinMasterExtendedKeys derives the master extended public and private keys.
+// Returns xpub and xprv at the master level (m).
+// This is the root of the HD wallet tree, before any BIP44/49/84 derivation.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The xpub and xprv at master level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMasterExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	masterPubKey, err := masterKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  masterPubKey.String(),
+		ExtendedPrivateKey: masterKey.String(),
+	}, nil
+}
+
+// DeriveBitcoinLegacyExtendedKeys derives the extended public and private keys for BIP44 Legacy.
+// Returns xpub and xprv at the account level (m/44'/0'/0').
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The xpub and xprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinLegacyExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account level: m/44'/0'/0'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 44, // purpose
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  accountPubKey.String(), // Already xpub format
+		ExtendedPrivateKey: accountKey.String(),    // Already xprv format
+	}, nil
+}
+
+// DeriveBitcoinSegwitExtendedKeys derives the extended public and private keys for BIP49 SegWit.
+// Returns ypub and yprv at the account level (m/49'/0'/0').
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The ypub and yprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account level: m/49'/0'/0'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 49, // purpose (BIP49)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// Encode with ypub/yprv version bytes
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, ypubVersion),
+		ExtendedPrivateKey: encodeExtendedKey(accountKey, yprvVersion),
+	}, nil
+}
+
+// DeriveBitcoinNativeSegwitExtendedKeys derives the extended public and private keys for BIP84 Native SegWit.
+// Returns zpub and zprv at the account level (m/84'/0'/0').
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The zpub and zprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinNativeSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account level: m/84'/0'/0'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 84, // purpose (BIP84)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// Encode with zpub/zprv version bytes
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, zpubVersion),
+		ExtendedPrivateKey: encodeExtendedKey(accountKey, zprvVersion),
+	}, nil
+}
+
+// DeriveBitcoinMultisigLegacyKeys derives a 1-of-1 multisig P2SH address and its WIF private key.
+// The function follows BIP48 standard with derivation path m/48'/0'/0'/0'/0/0.
+// Script type 0' indicates P2SH (legacy multisig).
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The P2SH multisig address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigLegacyKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP48 path: m/48'/0'/0'/0'/0/0
+	// 48' = purpose (BIP48 multisig)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 0' = script type (P2SH legacy)
+	// 0 = change (external)
+	// 0 = address index
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 0,  // script type (P2SH)
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create 1-of-1 multisig script: OP_1 <pubkey> OP_1 OP_CHECKMULTISIG
+	builder := txscript.NewScriptBuilder()
+	builder.AddOp(txscript.OP_1)
+	builder.AddData(pubKey.SerializeCompressed())
+	builder.AddOp(txscript.OP_1)
+	builder.AddOp(txscript.OP_CHECKMULTISIG)
+	multisigScript, err := builder.Script()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build multisig script: %w", err)
+	}
+
+	// Create P2SH address from the multisig script
+	scriptHash := btcutil.Hash160(multisigScript)
+	addr, err := btcutil.NewAddressScriptHashFromHash(scriptHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2SH address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinMultisigSegwitKeys derives a 1-of-1 multisig P2SH-P2WSH address and its WIF private key.
+// The function follows BIP48 standard with derivation path m/48'/0'/0'/1'/0/0.
+// Script type 1' indicates P2SH-P2WSH (nested SegWit multisig).
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The P2SH-P2WSH multisig address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigSegwitKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP48 path: m/48'/0'/0'/1'/0/0
+	// 48' = purpose (BIP48 multisig)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 1' = script type (P2SH-P2WSH nested SegWit)
+	// 0 = change (external)
+	// 0 = address index
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 1,  // script type (P2SH-P2WSH)
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create 1-of-1 multisig witness script: OP_1 <pubkey> OP_1 OP_CHECKMULTISIG
+	builder := txscript.NewScriptBuilder()
+	builder.AddOp(txscript.OP_1)
+	builder.AddData(pubKey.SerializeCompressed())
+	builder.AddOp(txscript.OP_1)
+	builder.AddOp(txscript.OP_CHECKMULTISIG)
+	witnessScript, err := builder.Script()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build witness script: %w", err)
+	}
+
+	// Create P2WSH address from the witness script
+	witnessScriptHash := sha256.Sum256(witnessScript)
+	p2wshAddr, err := btcutil.NewAddressWitnessScriptHash(witnessScriptHash[:], &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2WSH address: %w", err)
+	}
+
+	// Wrap in P2SH to create P2SH-P2WSH address
+	p2wshScript, err := txscript.PayToAddrScript(p2wshAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2WSH script: %w", err)
+	}
+	addr, err := btcutil.NewAddressScriptHash(p2wshScript, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2SH address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinMultisigNativeSegwitKeys derives a 1-of-1 multisig P2WSH address and its WIF private key.
+// The function follows BIP48 standard with derivation path m/48'/0'/0'/2'/0/0.
+// Script type 2' indicates P2WSH (native SegWit multisig).
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The P2WSH multisig address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigNativeSegwitKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP48 path: m/48'/0'/0'/2'/0/0
+	// 48' = purpose (BIP48 multisig)
+	// 0' = coin type (Bitcoin)
+	// 0' = account
+	// 2' = script type (P2WSH native SegWit)
+	// 0 = change (external)
+	// 0 = address index
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 2,  // script type (P2WSH)
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Create 1-of-1 multisig witness script: OP_1 <pubkey> OP_1 OP_CHECKMULTISIG
+	builder := txscript.NewScriptBuilder()
+	builder.AddOp(txscript.OP_1)
+	builder.AddData(pubKey.SerializeCompressed())
+	builder.AddOp(txscript.OP_1)
+	builder.AddOp(txscript.OP_CHECKMULTISIG)
+	witnessScript, err := builder.Script()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build witness script: %w", err)
+	}
+
+	// Create P2WSH address from the witness script (starts with "bc1q" for 20-byte hash or "bc1q" for 32-byte)
+	witnessScriptHash := sha256.Sum256(witnessScript)
+	addr, err := btcutil.NewAddressWitnessScriptHash(witnessScriptHash[:], &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create P2WSH address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinMultisigLegacyExtendedKeys derives extended keys for BIP48 Legacy multisig.
+// Returns xpub and xprv at the account/script level (m/48'/0'/0'/0').
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The xpub and xprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigLegacyExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account/script level: m/48'/0'/0'/0'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 0,  // script type (P2SH)
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// For legacy multisig, we use standard xpub/xprv
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  accountPubKey.String(),
+		ExtendedPrivateKey: accountKey.String(),
+	}, nil
+}
+
+// DeriveBitcoinMultisigSegwitExtendedKeys derives extended keys for BIP48 SegWit multisig.
+// Returns Ypub and Yprv at the account/script level (m/48'/0'/0'/1').
+// Uppercase Y indicates multisig P2SH-P2WSH.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The Ypub and Yprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account/script level: m/48'/0'/0'/1'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 1,  // script type (P2SH-P2WSH)
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// Encode with Ypub/Yprv version bytes (uppercase = multisig)
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, multisigYpubVersion),
+		ExtendedPrivateKey: encodeExtendedKey(accountKey, multisigYprvVersion),
+	}, nil
+}
+
+// DeriveBitcoinMultisigNativeSegwitExtendedKeys derives extended keys for BIP48 Native SegWit multisig.
+// Returns Zpub and Zprv at the account/script level (m/48'/0'/0'/2').
+// Uppercase Z indicates multisig P2WSH.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The Zpub and Zprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account/script level: m/48'/0'/0'/2'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 48, // purpose (BIP48)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		hdkeychain.HardenedKeyStart + 2,  // script type (P2WSH)
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// Encode with Zpub/Zprv version bytes (uppercase = multisig)
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, multisigZpubVersion),
+		ExtendedPrivateKey: encodeExtendedKey(accountKey, multisigZprvVersion),
+	}, nil
+}
