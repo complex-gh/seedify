@@ -885,16 +885,16 @@ func reduceToScalar(keyBytes []byte) ([]byte, error) {
 // These are used to encode extended keys with version prefixes that indicate
 // the derivation path standard (BIP44, BIP49, BIP84).
 const (
-	// BIP49 SegWit (ypub/yprv)
+	// BIP49 SegWit (ypub/yprv).
 	ypubVersion uint32 = 0x049D7CB2
 	yprvVersion uint32 = 0x049D7878
-	// BIP84 Native SegWit (zpub/zprv)
+	// BIP84 Native SegWit (zpub/zprv).
 	zpubVersion uint32 = 0x04B24746
 	zprvVersion uint32 = 0x04B2430C
-	// BIP48 Multisig P2SH-P2WSH (Ypub/Yprv) - uppercase denotes multisig
+	// BIP48 Multisig P2SH-P2WSH (Ypub/Yprv). Uppercase denotes multisig.
 	multisigYpubVersion uint32 = 0x0295B43F
 	multisigYprvVersion uint32 = 0x0295B005
-	// BIP48 Multisig P2WSH (Zpub/Zprv) - uppercase denotes multisig
+	// BIP48 Multisig P2WSH (Zpub/Zprv). Uppercase denotes multisig.
 	multisigZpubVersion uint32 = 0x02AA7ED3
 	multisigZprvVersion uint32 = 0x02AA7A99
 )
@@ -1145,7 +1145,7 @@ func encodeExtendedKey(key *hdkeychain.ExtendedKey, version uint32) string {
 	}
 
 	// Get payload without checksum
-	payload := decoded[:78] //nolint:mnd
+	payload := decoded[:78]
 
 	// Replace the first 4 bytes (version) with our custom version
 	versionBytes := make([]byte, 4) //nolint:mnd

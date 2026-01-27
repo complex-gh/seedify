@@ -727,7 +727,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		}
 
 		// Derive and display Bitcoin keys for 12 or 24-word seed phrase
-		if (count == 12 || count == 24) && deriveBtc { //nolint:mnd,nestif
+		if (count == 12 || count == 24) && deriveBtc {
 			// Derive all Bitcoin keys and extended keys
 			if err := displayBitcoinOutput(mnemonic, count); err != nil {
 				return err
