@@ -146,8 +146,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					wordCounts = parsedCounts
 				} else if hasCryptoFlags {
 					// If crypto flags are set but no word counts, ensure we have the needed word counts
-					// BTC, ETH, SOL need 24 words; XMR needs 16 words
+					// BTC needs 12 and 24 words; ETH, SOL need 24 words; XMR needs 16 words
 					wordCounts = []int{}
+					if bitcoin {
+						wordCounts = append(wordCounts, 12) //nolint:mnd
+					}
 					if monero {
 						wordCounts = append(wordCounts, 16) //nolint:mnd
 					}
@@ -723,43 +726,16 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 			fmt.Println()
 		}
 
-		// Derive and display crypto addresses for 24-word seed phrase
-		if count == 24 { //nolint:mnd,nestif
-			// Bitcoin addresses (all types)
-			if deriveBtc {
-				// Legacy P2PKH (BIP44) - starts with "1"
-				btcLegacy, err := seedify.DeriveBitcoinAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Bitcoin legacy address: %w", err)
-				}
-
-				// Nested SegWit P2SH-P2WPKH (BIP49) - starts with "3"
-				btcSegwit, err := seedify.DeriveBitcoinAddressSegwit(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Bitcoin SegWit address: %w", err)
-				}
-
-				// Native SegWit P2WPKH (BIP84) - starts with "bc1q"
-				btcNative, err := seedify.DeriveBitcoinAddressNativeSegwit(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
-				}
-
-				// Taproot P2TR (BIP86) - starts with "bc1p"
-				btcTaproot, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
-				}
-
-				fmt.Printf("[bitcoin addresses from 24 word seed]\n")
-				fmt.Println()
-				fmt.Printf("%s (legacy P2PKH - BIP44)\n", btcLegacy)
-				fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", btcSegwit)
-				fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", btcNative)
-				fmt.Printf("%s (taproot P2TR - BIP86)\n", btcTaproot)
-				fmt.Println()
+		// Derive and display Bitcoin keys for 12 or 24-word seed phrase
+		if (count == 12 || count == 24) && deriveBtc {
+			// Derive all Bitcoin keys and extended keys
+			if err := displayBitcoinOutput(mnemonic, count); err != nil {
+				return err
 			}
+		}
 
+		// Derive and display Ethereum/Solana addresses for 24-word seed phrase only
+		if count == 24 { //nolint:mnd,nestif
 			// Ethereum address
 			if deriveEth {
 				ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
@@ -848,4 +824,160 @@ func parseWordCounts(wordCountStr string) ([]int, error) {
 func askKeyPassphrase(path string) ([]byte, error) {
 	defer fmt.Fprintf(os.Stderr, "\n")
 	return readPassword(fmt.Sprintf("Enter the passphrase to unlock %q: ", path))
+}
+
+// displayBitcoinOutput displays all Bitcoin derivations for a given mnemonic.
+// This includes addresses with private keys, extended keys, and multisig addresses.
+//
+//nolint:funlen
+func displayBitcoinOutput(mnemonic string, wordCount int) error {
+	// === MASTER EXTENDED KEYS ===
+	// The master key is the root of the HD wallet tree (path: m)
+	// This is the same key regardless of which BIP standard you're using
+
+	masterExtended, err := seedify.DeriveBitcoinMasterExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin master extended keys: %w", err)
+	}
+
+	fmt.Printf("[bitcoin master extended keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (master xpub at m)\n", masterExtended.ExtendedPublicKey)
+	fmt.Printf("%s (master xprv at m)\n", masterExtended.ExtendedPrivateKey)
+	fmt.Println()
+
+	// === SINGLE-SIG ADDRESSES AND PRIVATE KEYS ===
+
+	// Legacy P2PKH (BIP44)
+	legacyKeys, err := seedify.DeriveBitcoinLegacyKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin legacy keys: %w", err)
+	}
+
+	// SegWit P2SH-P2WPKH (BIP49)
+	segwitKeys, err := seedify.DeriveBitcoinSegwitKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin SegWit keys: %w", err)
+	}
+
+	// Native SegWit P2WPKH (BIP84)
+	nativeKeys, err := seedify.DeriveBitcoinNativeSegwitKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin native SegWit keys: %w", err)
+	}
+
+	// Taproot P2TR (BIP86) - address only, no extended keys per spec
+	taprootAddr, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
+	}
+
+	fmt.Printf("[bitcoin addresses from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (legacy P2PKH - BIP44 m/44'/0'/0'/0/0)\n", legacyKeys.Address)
+	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49 m/49'/0'/0'/0/0)\n", segwitKeys.Address)
+	fmt.Printf("%s (native segwit P2WPKH - BIP84 m/84'/0'/0'/0/0)\n", nativeKeys.Address)
+	fmt.Printf("%s (taproot P2TR - BIP86 m/86'/0'/0'/0/0)\n", taprootAddr)
+	fmt.Println()
+
+	// === PRIVATE KEYS (WIF) ===
+
+	fmt.Printf("[bitcoin private keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (legacy P2PKH - BIP44)\n", legacyKeys.PrivateWIF)
+	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", segwitKeys.PrivateWIF)
+	fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", nativeKeys.PrivateWIF)
+	fmt.Println()
+
+	// === ACCOUNT-LEVEL EXTENDED KEYS ===
+	// These are derived to the account level for each BIP standard
+	// Import these into wallets to derive all addresses for that account
+
+	// Legacy extended keys (xpub/xprv)
+	legacyExtended, err := seedify.DeriveBitcoinLegacyExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin legacy extended keys: %w", err)
+	}
+
+	// SegWit extended keys (ypub/yprv)
+	segwitExtended, err := seedify.DeriveBitcoinSegwitExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin SegWit extended keys: %w", err)
+	}
+
+	// Native SegWit extended keys (zpub/zprv)
+	nativeExtended, err := seedify.DeriveBitcoinNativeSegwitExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin native SegWit extended keys: %w", err)
+	}
+
+	fmt.Printf("[bitcoin account extended public keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (legacy account xpub - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPublicKey)
+	fmt.Printf("%s (segwit account ypub - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPublicKey)
+	fmt.Printf("%s (native segwit account zpub - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPublicKey)
+	fmt.Println()
+
+	fmt.Printf("[bitcoin account extended private keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (legacy account xprv - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPrivateKey)
+	fmt.Printf("%s (segwit account yprv - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPrivateKey)
+	fmt.Printf("%s (native segwit account zprv - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPrivateKey)
+	fmt.Println()
+
+	// === MULTISIG 1-OF-1 ADDRESSES AND PRIVATE KEYS ===
+
+	// SegWit multisig P2SH-P2WSH (BIP48)
+	multisigSegwitKeys, err := seedify.DeriveBitcoinMultisigSegwitKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig SegWit keys: %w", err)
+	}
+
+	// Native SegWit multisig P2WSH (BIP48)
+	multisigNativeKeys, err := seedify.DeriveBitcoinMultisigNativeSegwitKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig native SegWit keys: %w", err)
+	}
+
+	fmt.Printf("[bitcoin multisig 1-of-1 addresses from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (segwit P2SH-P2WSH - BIP48 m/48'/0'/0'/1'/0/0)\n", multisigSegwitKeys.Address)
+	fmt.Printf("%s (native segwit P2WSH - BIP48 m/48'/0'/0'/2'/0/0)\n", multisigNativeKeys.Address)
+	fmt.Println()
+
+	fmt.Printf("[bitcoin multisig 1-of-1 private keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (segwit P2SH-P2WSH - BIP48)\n", multisigSegwitKeys.PrivateWIF)
+	fmt.Printf("%s (native segwit P2WSH - BIP48)\n", multisigNativeKeys.PrivateWIF)
+	fmt.Println()
+
+	// === MULTISIG ACCOUNT-LEVEL EXTENDED KEYS ===
+	// Note: BIP48 only defines script types 1' (P2SH-P2WSH) and 2' (P2WSH)
+	// Legacy P2SH multisig (script type 0') is not part of BIP48 standard
+
+	// SegWit multisig extended keys (Ypub/Yprv)
+	multisigSegwitExtended, err := seedify.DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig SegWit extended keys: %w", err)
+	}
+
+	// Native SegWit multisig extended keys (Zpub/Zprv)
+	multisigNativeExtended, err := seedify.DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig native SegWit extended keys: %w", err)
+	}
+
+	fmt.Printf("[bitcoin multisig 1-of-1 account extended public keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (segwit account Ypub - BIP48 m/48'/0'/0'/1')\n", multisigSegwitExtended.ExtendedPublicKey)
+	fmt.Printf("%s (native segwit account Zpub - BIP48 m/48'/0'/0'/2')\n", multisigNativeExtended.ExtendedPublicKey)
+	fmt.Println()
+
+	fmt.Printf("[bitcoin multisig 1-of-1 account extended private keys from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (segwit account Yprv - BIP48 m/48'/0'/0'/1')\n", multisigSegwitExtended.ExtendedPrivateKey)
+	fmt.Printf("%s (native segwit account Zprv - BIP48 m/48'/0'/0'/2')\n", multisigNativeExtended.ExtendedPrivateKey)
+	fmt.Println()
+
+	return nil
 }
