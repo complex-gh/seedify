@@ -660,6 +660,122 @@ func DeriveBitcoinAddressTaproot(mnemonic string, bip39Passphrase string) (strin
 	return addr.EncodeAddress(), nil
 }
 
+// DeriveBitcoinTaprootKeys derives a Bitcoin Taproot P2TR address and its WIF private key.
+// The function follows BIP86 standard with derivation path m/86'/0'/0'/0/0.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinKeys: The address and WIF-encoded private key
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinTaprootKeys(mnemonic string, bip39Passphrase string) (*BitcoinKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP86 path: m/86'/0'/0'/0/0
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 86, // purpose (BIP86)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+		0,                                // change (external)
+		0,                                // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the public key for Taproot
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// For Taproot, we use the x-only public key (32 bytes)
+	// The internal key is tweaked with an empty merkle root for key-path spending
+	taprootKey := txscript.ComputeTaprootKeyNoScript(pubKey)
+
+	// Create P2TR address (starts with "bc1p")
+	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create taproot address: %w", err)
+	}
+
+	// Get the private key in WIF format
+	privKey, err := addressKey.ECPrivKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get private key: %w", err)
+	}
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create WIF: %w", err)
+	}
+
+	return &BitcoinKeys{
+		Address:    addr.EncodeAddress(),
+		PrivateWIF: wif.String(),
+	}, nil
+}
+
+// DeriveBitcoinTaprootExtendedKeys derives the extended public and private keys for BIP86 Taproot.
+// Returns xpub and xprv at the account level (m/86'/0'/0').
+// Note: There is no widely adopted SLIP-132 prefix for taproot, so standard xpub/xprv is used.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - BitcoinExtendedKeys: The xpub and xprv at account level
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinTaprootExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive to account level: m/86'/0'/0'
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 86, // purpose (BIP86)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // account
+	}
+	accountKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive account key: %w", err)
+	}
+
+	// Get the public key version (neuter removes the private key)
+	accountPubKey, err := accountKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter key: %w", err)
+	}
+
+	// Use standard xpub/xprv format (no SLIP-132 prefix for taproot)
+	return &BitcoinExtendedKeys{
+		ExtendedPublicKey:  accountPubKey.String(),
+		ExtendedPrivateKey: accountKey.String(),
+	}, nil
+}
+
 // DeriveEthereumAddress derives an Ethereum address from a BIP39 mnemonic phrase.
 // The function follows BIP44 standard with derivation path m/44'/60'/0'/0/0.
 // It returns a checksummed Ethereum address (starts with "0x").

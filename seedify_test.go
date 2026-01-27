@@ -803,6 +803,53 @@ func TestBitcoinKeys_DifferentFromSingleSig(t *testing.T) {
 	is.True(nativeKeys.PrivateWIF != msNativeKeys.PrivateWIF)
 }
 
+// TestDeriveBitcoinTaprootKeys_ValidFormat tests that DeriveBitcoinTaprootKeys produces valid address and WIF
+func TestDeriveBitcoinTaprootKeys_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	keys, err := DeriveBitcoinTaprootKeys(mnemonic, "")
+	is.NoErr(err)
+
+	// Verify address format - P2TR address should start with "bc1p"
+	is.True(strings.HasPrefix(keys.Address, "bc1p"))
+
+	// Verify WIF format - compressed WIF should start with "K" or "L" for mainnet
+	is.True(strings.HasPrefix(keys.PrivateWIF, "K") || strings.HasPrefix(keys.PrivateWIF, "L"))
+	is.Equal(len(keys.PrivateWIF), 52)
+}
+
+// TestDeriveBitcoinTaprootExtendedKeys_ValidFormat tests taproot extended keys format
+func TestDeriveBitcoinTaprootExtendedKeys_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	extKeys, err := DeriveBitcoinTaprootExtendedKeys(mnemonic, "")
+	is.NoErr(err)
+
+	// Taproot uses standard xpub/xprv format (no SLIP-132 prefix)
+	is.True(strings.HasPrefix(extKeys.ExtendedPublicKey, "xpub"))
+	is.True(strings.HasPrefix(extKeys.ExtendedPrivateKey, "xprv"))
+}
+
+// TestDeriveBitcoinTaprootKeys_Deterministic verifies taproot keys are deterministic
+func TestDeriveBitcoinTaprootKeys_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	keys1, err := DeriveBitcoinTaprootKeys(mnemonic, "")
+	is.NoErr(err)
+
+	keys2, err := DeriveBitcoinTaprootKeys(mnemonic, "")
+	is.NoErr(err)
+
+	is.Equal(keys1.Address, keys2.Address)
+	is.Equal(keys1.PrivateWIF, keys2.PrivateWIF)
+}
+
 // TestBitcoinKeys_12WordMnemonic tests that 12-word mnemonics work correctly
 func TestBitcoinKeys_12WordMnemonic(t *testing.T) {
 	is := is.New(t)
