@@ -279,6 +279,69 @@ func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (st
 	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
 }
 
+// NostrKeys contains all Nostr key formats derived from a mnemonic.
+type NostrKeys struct {
+	// Npub is the public key in bech32 format (starts with "npub1")
+	Npub string
+	// Nsec is the private key in bech32 format (starts with "nsec1")
+	Nsec string
+	// PubKeyHex is the raw public key in hexadecimal format (64 characters)
+	PubKeyHex string
+	// PrivKeyHex is the raw private key in hexadecimal format (64 characters)
+	PrivKeyHex string
+}
+
+// DeriveNostrKeysWithHex derives Nostr keys from a BIP39 mnemonic phrase.
+// Returns keys in both bech32 (npub/nsec) and hexadecimal formats.
+// The function follows NIP-06 standard: it converts the mnemonic to a BIP39 seed,
+// then uses BIP32 hierarchical derivation with path m/44'/1237'/0'/0/0 to derive
+// the Nostr private key.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - NostrKeys: Contains npub, nsec, pubKeyHex, and privKeyHex
+//   - error: Any error that occurred during derivation
+func DeriveNostrKeysWithHex(mnemonic string, bip39Passphrase string) (*NostrKeys, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Derive private key using NIP-06 standard BIP32 path: m/44'/1237'/0'/0/0
+	privateKeyHex, err := nip06.PrivateKeyFromSeed(seed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive private key from seed: %w", err)
+	}
+
+	// Derive public key from private key
+	publicKeyHex, err := nostr.GetPublicKey(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive public key: %w", err)
+	}
+
+	// Encode keys to npub/nsec format using nip19 bech32 encoding
+	npub, err := nip19.EncodePublicKey(publicKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode public key: %w", err)
+	}
+
+	nsec, err := nip19.EncodePrivateKey(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode private key: %w", err)
+	}
+
+	return &NostrKeys{
+		Npub:       npub,
+		Nsec:       nsec,
+		PubKeyHex:  publicKeyHex,
+		PrivKeyHex: privateKeyHex,
+	}, nil
+}
+
 // DeriveNostrKeys derives Nostr keys (npub/nsec) from a BIP39 mnemonic phrase.
 // The function follows NIP-06 standard: it converts the mnemonic to a BIP39 seed,
 // then uses BIP32 hierarchical derivation with path m/44'/1237'/0'/0/0 to derive
@@ -1027,6 +1090,20 @@ type BitcoinExtendedKeys struct {
 	ExtendedPrivateKey string
 }
 
+// BitcoinMultisigExtendedKeys contains both the specific format (Ypub/Yprv or Zpub/Zprv)
+// and the standard format (xpub/xprv) for multisig extended keys.
+// The standard keys are nested conceptually below the specific keys.
+type BitcoinMultisigExtendedKeys struct {
+	// ExtendedPublicKey is the specific format (e.g., Ypub or Zpub)
+	ExtendedPublicKey string
+	// ExtendedPrivateKey is the specific format (e.g., Yprv or Zprv)
+	ExtendedPrivateKey string
+	// StandardPublicKey is the standard xpub format
+	StandardPublicKey string
+	// StandardPrivateKey is the standard xprv format
+	StandardPrivateKey string
+}
+
 // deriveBIP32Path derives a key at the given BIP32 path from a master key.
 // The path is specified as a slice of uint32 values, where values >= 0x80000000
 // are hardened derivations.
@@ -1766,17 +1843,22 @@ func DeriveBitcoinMultisigLegacyExtendedKeys(mnemonic string, bip39Passphrase st
 }
 
 // DeriveBitcoinMultisigSegwitExtendedKeys derives extended keys for BIP48 SegWit multisig.
-// Returns Ypub and Yprv at the account/script level (m/48'/0'/0'/1').
+// Returns Ypub/Yprv (SLIP-132 format) and xpub/xprv (standard format) at the account/script level (m/48'/0'/0'/1').
 // Uppercase Y indicates multisig P2SH-P2WSH.
+//
+// The standard xpub/xprv keys are provided as nested alternatives to the specific Ypub/Yprv format:
+//
+//	Yprv ...
+//	|_ xprv ...
 //
 // Parameters:
 //   - mnemonic: A valid BIP39 mnemonic phrase
 //   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
 //
 // Returns:
-//   - BitcoinExtendedKeys: The Ypub and Yprv at account level
+//   - BitcoinMultisigExtendedKeys: The Ypub/Yprv and xpub/xprv at account level
 //   - error: Any error that occurred during derivation
-func DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+func DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinMultisigExtendedKeys, error) {
 	// Validate mnemonic and convert to BIP39 seed with optional passphrase
 	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
 	if err != nil {
@@ -1807,25 +1889,32 @@ func DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic string, bip39Passphrase st
 		return nil, fmt.Errorf("failed to neuter key: %w", err)
 	}
 
-	// Encode with Ypub/Yprv version bytes (uppercase = multisig)
-	return &BitcoinExtendedKeys{
+	// Return both Ypub/Yprv (SLIP-132) and standard xpub/xprv formats
+	return &BitcoinMultisigExtendedKeys{
 		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, multisigYpubVersion),
 		ExtendedPrivateKey: encodeExtendedKey(accountKey, multisigYprvVersion),
+		StandardPublicKey:  accountPubKey.String(),
+		StandardPrivateKey: accountKey.String(),
 	}, nil
 }
 
 // DeriveBitcoinMultisigNativeSegwitExtendedKeys derives extended keys for BIP48 Native SegWit multisig.
-// Returns Zpub and Zprv at the account/script level (m/48'/0'/0'/2').
+// Returns Zpub/Zprv (SLIP-132 format) and xpub/xprv (standard format) at the account/script level (m/48'/0'/0'/2').
 // Uppercase Z indicates multisig P2WSH.
+//
+// The standard xpub/xprv keys are provided as nested alternatives to the specific Zpub/Zprv format:
+//
+//	Zprv ...
+//	|_ xprv ...
 //
 // Parameters:
 //   - mnemonic: A valid BIP39 mnemonic phrase
 //   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
 //
 // Returns:
-//   - BitcoinExtendedKeys: The Zpub and Zprv at account level
+//   - BitcoinMultisigExtendedKeys: The Zpub/Zprv and xpub/xprv at account level
 //   - error: Any error that occurred during derivation
-func DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinExtendedKeys, error) {
+func DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic string, bip39Passphrase string) (*BitcoinMultisigExtendedKeys, error) {
 	// Validate mnemonic and convert to BIP39 seed with optional passphrase
 	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
 	if err != nil {
@@ -1856,9 +1945,11 @@ func DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic string, bip39Passphr
 		return nil, fmt.Errorf("failed to neuter key: %w", err)
 	}
 
-	// Encode with Zpub/Zprv version bytes (uppercase = multisig)
-	return &BitcoinExtendedKeys{
+	// Return both Zpub/Zprv (SLIP-132) and standard xpub/xprv formats
+	return &BitcoinMultisigExtendedKeys{
 		ExtendedPublicKey:  encodeExtendedKey(accountPubKey, multisigZpubVersion),
 		ExtendedPrivateKey: encodeExtendedKey(accountKey, multisigZprvVersion),
+		StandardPublicKey:  accountPubKey.String(),
+		StandardPrivateKey: accountKey.String(),
 	}, nil
 }

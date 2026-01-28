@@ -714,15 +714,17 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 		// Derive and display nostr keys for 12-word and 24-word seed phrases only
 		if deriveNostr && (count == 12 || count == 24) {
-			npub, nsec, err := seedify.DeriveNostrKeys(mnemonic, "")
+			nostrKeys, err := seedify.DeriveNostrKeysWithHex(mnemonic, "")
 			if err != nil {
 				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, err)
 			}
 
 			fmt.Printf("[nostr keys from %d word seed]\n", count)
 			fmt.Println()
-			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", npub)
-			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nsec)
+			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", nostrKeys.Npub)
+			fmt.Printf("└─ %s (hex)\n", nostrKeys.PubKeyHex)
+			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nostrKeys.Nsec)
+			fmt.Printf("└─ %s (hex)\n", nostrKeys.PrivKeyHex)
 			fmt.Println()
 		}
 
@@ -936,6 +938,12 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 
 	// === MULTISIG 1-OF-1 ADDRESSES AND PRIVATE KEYS ===
 
+	// Legacy multisig P2SH (BIP48)
+	multisigLegacyKeys, err := seedify.DeriveBitcoinMultisigLegacyKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig legacy keys: %w", err)
+	}
+
 	// SegWit multisig P2SH-P2WSH (BIP48)
 	multisigSegwitKeys, err := seedify.DeriveBitcoinMultisigSegwitKeys(mnemonic, "")
 	if err != nil {
@@ -950,19 +958,25 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 
 	fmt.Printf("[bitcoin multisig 1-of-1 addresses from %d word seed]\n", wordCount)
 	fmt.Println()
+	fmt.Printf("%s (legacy P2SH - BIP48 m/48'/0'/0'/0'/0/0)\n", multisigLegacyKeys.Address)
 	fmt.Printf("%s (segwit P2SH-P2WSH - BIP48 m/48'/0'/0'/1'/0/0)\n", multisigSegwitKeys.Address)
 	fmt.Printf("%s (native segwit P2WSH - BIP48 m/48'/0'/0'/2'/0/0)\n", multisigNativeKeys.Address)
 	fmt.Println()
 
 	fmt.Printf("[bitcoin multisig 1-of-1 private keys from %d word seed]\n", wordCount)
 	fmt.Println()
+	fmt.Printf("%s (legacy P2SH - BIP48)\n", multisigLegacyKeys.PrivateWIF)
 	fmt.Printf("%s (segwit P2SH-P2WSH - BIP48)\n", multisigSegwitKeys.PrivateWIF)
 	fmt.Printf("%s (native segwit P2WSH - BIP48)\n", multisigNativeKeys.PrivateWIF)
 	fmt.Println()
 
 	// === MULTISIG ACCOUNT-LEVEL EXTENDED KEYS ===
-	// Note: BIP48 only defines script types 1' (P2SH-P2WSH) and 2' (P2WSH)
-	// Legacy P2SH multisig (script type 0') is not part of BIP48 standard
+
+	// Legacy multisig extended keys (xpub/xprv)
+	multisigLegacyExtended, err := seedify.DeriveBitcoinMultisigLegacyExtendedKeys(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive Bitcoin multisig legacy extended keys: %w", err)
+	}
 
 	// SegWit multisig extended keys (Ypub/Yprv)
 	multisigSegwitExtended, err := seedify.DeriveBitcoinMultisigSegwitExtendedKeys(mnemonic, "")
@@ -978,14 +992,20 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 
 	fmt.Printf("[bitcoin multisig 1-of-1 account extended public keys from %d word seed]\n", wordCount)
 	fmt.Println()
+	fmt.Printf("%s (legacy account xpub - BIP48 m/48'/0'/0'/0')\n", multisigLegacyExtended.ExtendedPublicKey)
 	fmt.Printf("%s (segwit account Ypub - BIP48 m/48'/0'/0'/1')\n", multisigSegwitExtended.ExtendedPublicKey)
+	fmt.Printf("└─ %s (xpub)\n", multisigSegwitExtended.StandardPublicKey)
 	fmt.Printf("%s (native segwit account Zpub - BIP48 m/48'/0'/0'/2')\n", multisigNativeExtended.ExtendedPublicKey)
+	fmt.Printf("└─ %s (xpub)\n", multisigNativeExtended.StandardPublicKey)
 	fmt.Println()
 
 	fmt.Printf("[bitcoin multisig 1-of-1 account extended private keys from %d word seed]\n", wordCount)
 	fmt.Println()
+	fmt.Printf("%s (legacy account xprv - BIP48 m/48'/0'/0'/0')\n", multisigLegacyExtended.ExtendedPrivateKey)
 	fmt.Printf("%s (segwit account Yprv - BIP48 m/48'/0'/0'/1')\n", multisigSegwitExtended.ExtendedPrivateKey)
+	fmt.Printf("└─ %s (xprv)\n", multisigSegwitExtended.StandardPrivateKey)
 	fmt.Printf("%s (native segwit account Zprv - BIP48 m/48'/0'/0'/2')\n", multisigNativeExtended.ExtendedPrivateKey)
+	fmt.Printf("└─ %s (xprv)\n", multisigNativeExtended.StandardPrivateKey)
 	fmt.Println()
 
 	return nil
