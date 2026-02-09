@@ -1167,8 +1167,8 @@ func DeriveMoneroKeys(mnemonic string, numSubaddresses int) (*MoneroKeys, error)
 
 	// Generate subaddresses
 	subaddresses := make([]string, 0, numSubaddresses)
-	for i := 1; i <= numSubaddresses; i++ {
-		subaddr, err := deriveMoneroSubaddress(viewSecKey, spendPubKey, 0, uint32(i))
+	for i := uint32(1); i <= uint32(numSubaddresses); i++ { //nolint:gosec // numSubaddresses is always small (single digits)
+		subaddr, err := deriveMoneroSubaddress(viewSecKey, spendPubKey, 0, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive subaddress (0,%d): %w", i, err)
 		}
