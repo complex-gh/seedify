@@ -5,7 +5,7 @@ go 1.25.6
 require (
 	filippo.io/edwards25519 v1.1.0
 	github.com/btcsuite/btcd v0.25.0
-	github.com/btcsuite/btcd/btcec/v2 v2.3.5
+	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/chekist32/go-monero v0.2.5
