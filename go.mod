@@ -22,7 +22,7 @@ require (
 	github.com/stephenlacy/go-ethereum-hdwallet v0.0.0-20230913225845-a4fa94429863
 	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/crypto v0.46.0
-	golang.org/x/term v0.38.0
+	golang.org/x/term v0.40.0
 	golang.org/x/text v0.32.0
 )
 
@@ -78,6 +78,6 @@ require (
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
