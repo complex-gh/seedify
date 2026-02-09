@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +54,7 @@ var (
 	ethereum       bool
 	solana         bool
 	monero         bool
+	dns            bool
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -111,10 +114,25 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return nil
 			}
 
+			// Handle --dns flag: output public keys and addresses as DNS JSON
+			// This is a special case that bypasses the unified output
+			if dns {
+				dnsJSON, err := generateDNSJSON(keyPath, seedPassphrase)
+				if err != nil {
+					if strings.Contains(err.Error(), "key is not password-protected") {
+						return formatPasswordError(err)
+					}
+					return err
+				}
+
+				fmt.Println(dnsJSON)
+				return nil
+			}
+
 			// Check if any derivation flags were explicitly provided
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasCryptoFlags := bitcoin || ethereum || solana || monero
+			hasCryptoFlags := bitcoin || ethereum || solana || monero || dns
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			// Determine which derivations to show
@@ -313,6 +331,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
+	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -1013,4 +1032,134 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 	fmt.Println()
 
 	return nil
+}
+
+// dnsRecord represents the JSON structure for DNS output.
+// Fields are ordered to match the expected DNS JSON format.
+type dnsRecord struct {
+	// SSHEd25519 is the base64-encoded SSH public key blob
+	SSHEd25519 string `json:"ssh-ed25519"`
+	// Npub is the Nostr public key in bech32 format
+	Npub string `json:"npub"`
+	// NpubKey is a duplicate of Npub for DNS compatibility
+	NpubKey string `json:"npubkey"`
+	// HexPub is the Nostr public key in hexadecimal format
+	HexPub string `json:"hexpub"`
+	// HexPubKey is a duplicate of HexPub for DNS compatibility
+	HexPubKey string `json:"hexpubkey"`
+	// Bitcoin is the native SegWit P2WPKH address (starts with "bc1q")
+	Bitcoin string `json:"bitcoin"`
+	// Taproot is the Taproot P2TR address (starts with "bc1p")
+	Taproot string `json:"taproot"`
+	// Ethereum is the checksummed Ethereum address (starts with "0x")
+	Ethereum string `json:"ethereum"`
+	// Solana is the Base58-encoded Solana address
+	Solana string `json:"solana"`
+}
+
+// generateDNSJSON generates a DNS JSON string containing public keys and addresses
+// derived from the SSH key's 24-word seed phrase. The JSON is printed to stdout.
+//
+//nolint:funlen
+func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
+	// Parse the key (same pattern as generateUnifiedOutput)
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return "", fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("could not read key: %w", err)
+	}
+
+	// Check if key is password-protected (required for this command)
+	isProtected, err := isKeyPasswordProtected(bts)
+	if err == nil && !isProtected {
+		return "", fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		// Key requires a password - ask for it and parse again with the same bytes
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return "", passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return "", fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("unknown key type: %v", key)
+	}
+
+	// Extract SSH public key as base64-encoded blob
+	sshPubKey, err := ssh.NewPublicKey(ed25519Key.Public())
+	if err != nil {
+		return "", fmt.Errorf("failed to create SSH public key: %w", err)
+	}
+	sshPubKeyBase64 := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
+
+	// Generate 24-word seed phrase for crypto address derivations
+	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+
+	// Derive Nostr keys from the 24-word seed
+	nostrKeys, err := seedify.DeriveNostrKeysWithHex(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Nostr keys: %w", err)
+	}
+
+	// Derive Bitcoin native SegWit address (bc1q)
+	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
+	}
+
+	// Derive Bitcoin Taproot address (bc1p)
+	taprootAddr, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
+	}
+
+	// Derive Ethereum address
+	ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Ethereum address: %w", err)
+	}
+
+	// Derive Solana address
+	solAddr, err := seedify.DeriveSolanaAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Solana address: %w", err)
+	}
+
+	// Build the DNS record struct
+	record := dnsRecord{
+		SSHEd25519: sshPubKeyBase64,
+		Npub:       nostrKeys.Npub,
+		NpubKey:    nostrKeys.Npub,
+		HexPub:     nostrKeys.PubKeyHex,
+		HexPubKey:  nostrKeys.PubKeyHex,
+		Bitcoin:    btcAddr,
+		Taproot:    taprootAddr,
+		Ethereum:   ethAddr,
+		Solana:     solAddr,
+	}
+
+	// Marshal to indented JSON
+	jsonBytes, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal DNS JSON: %w", err)
+	}
+
+	return string(jsonBytes), nil
 }
