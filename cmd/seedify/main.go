@@ -53,6 +53,7 @@ var (
 	bitcoin        bool
 	ethereum       bool
 	solana         bool
+	tron           bool
 	monero         bool
 	dns            bool
 
@@ -132,7 +133,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// Check if any derivation flags were explicitly provided
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasCryptoFlags := bitcoin || ethereum || solana || monero || dns
+			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || dns
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			// Determine which derivations to show
@@ -141,7 +142,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			var wordCounts []int
 			var deriveNostr bool
 			var showBrave bool
-			var deriveBtc, deriveEth, deriveSol, deriveXmr bool
+			var deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool
 
 			if !hasAnyDerivationFlags {
 				// No flags provided - show all derivations including brave seed at the end
@@ -152,6 +153,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				deriveBtc = true
 				deriveEth = true
 				deriveSol = true
+				deriveTron = true
 				deriveXmr = true
 			} else {
 				// Flags provided - show only specified derivations
@@ -164,7 +166,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					wordCounts = parsedCounts
 				} else if hasCryptoFlags {
 					// If crypto flags are set but no word counts, ensure we have the needed word counts
-					// BTC needs 12 and 24 words; ETH, SOL need 24 words; XMR needs 16 words
+					// BTC needs 12 and 24 words; ETH, SOL, TRON need 24 words; XMR needs 16 words
 					wordCounts = []int{}
 					if bitcoin {
 						wordCounts = append(wordCounts, 12) //nolint:mnd
@@ -172,7 +174,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					if monero {
 						wordCounts = append(wordCounts, 16) //nolint:mnd
 					}
-					if bitcoin || ethereum || solana {
+					if bitcoin || ethereum || solana || tron {
 						wordCounts = append(wordCounts, 24) //nolint:mnd
 					}
 				}
@@ -184,11 +186,12 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				deriveBtc = bitcoin
 				deriveEth = ethereum
 				deriveSol = solana
+				deriveTron = tron
 				deriveXmr = monero
 			}
 
 			// Generate unified output (seed phrases + wallet derivations)
-			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveXmr)
+			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
@@ -330,6 +333,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&bitcoin, "btc", false, "Derive Bitcoin address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
+	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
 	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
 	rootCmd.AddCommand(manCmd)
@@ -662,8 +666,8 @@ func readPassword(msg string) ([]byte, error) {
 // It displays outputs in a fixed order: seed phrase first, then wallet derivations.
 // When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
 // When showBrave is true, it also displays the brave 24-word seed phrase at the end.
-// Crypto address flags (deriveBtc, deriveEth, deriveSol, deriveXmr) control which addresses to derive.
-func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool, deriveBtc, deriveEth, deriveSol, deriveXmr bool) error {
+// Crypto address flags (deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr) control which addresses to derive.
+func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool) error {
 	// Parse the key once
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
@@ -784,6 +788,19 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				fmt.Printf("[solana address from 24 word seed]\n")
 				fmt.Println()
 				fmt.Println(solAddr)
+				fmt.Println()
+			}
+
+			// Tron address
+			if deriveTron {
+				tronAddr, err := seedify.DeriveTronAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Tron address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[tron address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(tronAddr)
 				fmt.Println()
 			}
 		}
@@ -1055,6 +1072,8 @@ type dnsRecord struct {
 	Ethereum string `json:"ethereum"`
 	// Solana is the Base58-encoded Solana address
 	Solana string `json:"solana"`
+	// Tron is the Base58Check-encoded Tron address (starts with "T")
+	Tron string `json:"tron"`
 }
 
 // generateDNSJSON generates a DNS JSON string containing public keys and addresses
@@ -1142,6 +1161,12 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Solana address: %w", err)
 	}
 
+	// Derive Tron address
+	tronAddr, err := seedify.DeriveTronAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Tron address: %w", err)
+	}
+
 	// Build the DNS record struct
 	record := dnsRecord{
 		SSHEd25519: sshPubKeyBase64,
@@ -1153,6 +1178,7 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		Taproot:    taprootAddr,
 		Ethereum:   ethAddr,
 		Solana:     solAddr,
+		Tron:       tronAddr,
 	}
 
 	// Marshal to indented JSON

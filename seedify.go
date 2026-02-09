@@ -885,6 +885,80 @@ func DeriveEthereumAddress(mnemonic string, bip39Passphrase string) (string, err
 	return account.Address.Hex(), nil
 }
 
+// DeriveTronAddress derives a Tron address from a BIP39 mnemonic phrase.
+// The function follows BIP44 standard with derivation path m/44'/195'/0'/0/0.
+// Tron uses the same secp256k1 key derivation and Keccak256 address computation
+// as Ethereum, but encodes the address using Base58Check with a 0x41 prefix
+// instead of hex with a 0x prefix. The resulting address starts with "T".
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Tron address (Base58Check-encoded, starts with "T")
+//   - error: Any error that occurred during derivation
+func DeriveTronAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Create HD wallet from mnemonic with optional passphrase
+	var wallet *hdwallet.Wallet
+	var err error
+
+	if bip39Passphrase != "" {
+		// Use seed directly when passphrase is provided
+		seed, seedErr := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+		if seedErr != nil {
+			return "", fmt.Errorf("invalid mnemonic: %w", seedErr)
+		}
+		wallet, err = hdwallet.NewFromSeed(seed)
+	} else {
+		wallet, err = hdwallet.NewFromMnemonic(mnemonic)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to create wallet from mnemonic: %w", err)
+	}
+
+	// Derive BIP44 path: m/44'/195'/0'/0/0
+	// 44' = purpose (BIP44)
+	// 195' = coin type (Tron)
+	// 0' = account
+	// 0 = change (external)
+	// 0 = address index
+	path := hdwallet.MustParseDerivationPath("m/44'/195'/0'/0/0")
+	account, err := wallet.Derive(path, false)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive account: %w", err)
+	}
+
+	// The hdwallet library computes the Ethereum-style 20-byte address
+	// (last 20 bytes of Keccak256 hash of the uncompressed public key).
+	// Tron uses the same address bytes, just with a different encoding.
+	addrBytes := account.Address.Bytes()
+
+	// Encode as Tron address: Base58Check(0x41 || address_bytes)
+	// 0x41 is the Tron mainnet address prefix
+	return encodeTronAddress(addrBytes), nil
+}
+
+// encodeTronAddress encodes a 20-byte address as a Tron Base58Check address.
+// The encoding format is: Base58(0x41 || address || checksum)
+// where checksum = SHA256(SHA256(0x41 || address))[:4].
+func encodeTronAddress(addrBytes []byte) string {
+	// Prepend Tron mainnet prefix (0x41)
+	payload := make([]byte, 0, 25) //nolint:mnd // 1 prefix + 20 address + 4 checksum
+	payload = append(payload, 0x41)
+	payload = append(payload, addrBytes...)
+
+	// Calculate checksum: first 4 bytes of double SHA256
+	firstHash := sha256.Sum256(payload)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+
+	// Append checksum and Base58 encode
+	payload = append(payload, checksum...)
+
+	return base58.Encode(payload)
+}
+
 // DeriveSolanaAddress derives a Solana address from a BIP39 mnemonic phrase.
 // The function follows SLIP-0010/BIP44 standard with derivation path m/44'/501'/0'/0'.
 // Solana uses Ed25519 keys, so all path components are hardened.
