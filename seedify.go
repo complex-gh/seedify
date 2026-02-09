@@ -21,6 +21,7 @@ import (
 	"math"
 	"time"
 
+	"filippo.io/edwards25519"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
@@ -980,20 +981,17 @@ func DeriveMoneroAddress(mnemonic string) (string, error) {
 	}
 	defer seed.Free()
 
-	// Derive the spend private key (32 bytes) from polyseed
-	// polyseedKeySize is the standard key size for Monero
+	// Derive the spend private key (32 bytes) from polyseed.
+	// The polyseed Keygen() function returns seed bytes that need to be
+	// reduced to a valid Ed25519 scalar using sc_reduce32.
 	const polyseedKeySize = 32
 	spendKeyBytes := seed.Keygen(polyseed.CoinMonero, polyseedKeySize)
 
-	// The key bytes need to be reduced to a valid Ed25519 scalar using sc_reduce32.
-	// This is done by hashing the bytes with Keccak256 and using the first 32 bytes,
-	// which are then converted to a canonical scalar representation.
-	reducedKey, err := reduceToScalar(spendKeyBytes)
-	if err != nil {
-		return "", fmt.Errorf("failed to reduce key to scalar: %w", err)
-	}
+	// Reduce the key bytes to a valid Ed25519 scalar.
+	// This performs sc_reduce32 without any hashing - the key bytes are used directly.
+	reducedKey := scReduce32(spendKeyBytes)
 
-	// Create Monero private key from the reduced bytes
+	// Create Monero private key from the reduced bytes.
 	spendPrivKey, err := utils.NewPrivateKey(hex.EncodeToString(reducedKey))
 	if err != nil {
 		return "", fmt.Errorf("failed to create spend private key: %w", err)
@@ -1035,29 +1033,193 @@ func DeriveMoneroAddress(mnemonic string) (string, error) {
 	return string(encoded), nil
 }
 
-// reduceToScalar reduces arbitrary 32 bytes to a valid Ed25519 scalar.
-// This ensures the bytes are in canonical form for use as a Monero private key.
+// MoneroKeys contains the primary address and subaddresses derived from a polyseed.
+type MoneroKeys struct {
+	// PrimaryAddress is the main Monero address (starts with "4")
+	PrimaryAddress string
+	// Subaddresses is a list of subaddresses (start with "8")
+	// Index 0 is subaddress (0,1), index 1 is (0,2), etc.
+	Subaddresses []string
+}
+
+// DeriveMoneroKeys derives a Monero primary address and subaddresses from a polyseed mnemonic.
+// The function decodes the polyseed to extract the seed bytes, then derives
+// the Monero spend and view keys, and generates the requested number of subaddresses.
 //
-// The reduction implements sc_reduce32 which reduces a 32-byte value modulo
-// the curve order L = 2^252 + 27742317777372353535851937790883648493.
-func reduceToScalar(keyBytes []byte) ([]byte, error) {
-	// Hash the key bytes with Keccak256 to get deterministic entropy
-	hash, err := utils.Keccak256Hash(keyBytes)
+// Parameters:
+//   - mnemonic: A valid 16-word polyseed mnemonic phrase
+//   - numSubaddresses: Number of subaddresses to generate (0 for none)
+//
+// Returns:
+//   - MoneroKeys: Contains the primary address and subaddresses
+//   - error: Any error that occurred during derivation
+func DeriveMoneroKeys(mnemonic string, numSubaddresses int) (*MoneroKeys, error) {
+	// Decode the polyseed mnemonic (auto-detects language)
+	seed, _, err := polyseed.Decode(mnemonic, polyseed.CoinMonero)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash key bytes: %w", err)
+		return nil, fmt.Errorf("failed to decode polyseed mnemonic: %w", err)
+	}
+	defer seed.Free()
+
+	// Derive the spend private key (32 bytes) from polyseed
+	const polyseedKeySize = 32
+	spendKeyBytes := seed.Keygen(polyseed.CoinMonero, polyseedKeySize)
+
+	// Reduce the key bytes to a valid Ed25519 scalar
+	reducedKey := scReduce32(spendKeyBytes)
+
+	// Create Monero private key from the reduced bytes
+	spendPrivKey, err := utils.NewPrivateKey(hex.EncodeToString(reducedKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create spend private key: %w", err)
 	}
 
-	// Implement sc_reduce32: reduce a 256-bit value modulo L
-	// For simplicity, we clear bits to ensure the value is definitely < L.
-	// L ≈ 2^252, so clearing the top 4 bits ensures our value < 2^252 < L.
-	result := make([]byte, 32) //nolint:mnd
-	copy(result, hash)
+	// Create Monero key pair from the spend private key
+	keyPair, err := utils.NewFullKeyPairSpendPrivateKey(spendPrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Monero key pair: %w", err)
+	}
 
-	// Clear the top 4 bits of byte 31 (little-endian, so byte 31 is the MSB)
-	// This ensures the 256-bit number is < 2^252 which is < L
-	result[31] &= 0x0F
+	// Get the keys
+	viewSecKey := keyPair.ViewKeyPair().PrivateKey().Bytes()
+	spendPubKey := keyPair.SpendKeyPair().PublicKey().Bytes()
+	viewPubKey := keyPair.ViewKeyPair().PublicKey().Bytes()
 
-	return result, nil
+	// Build primary address
+	primaryAddr, err := buildMoneroAddress(0x12, spendPubKey, viewPubKey) //nolint:mnd
+	if err != nil {
+		return nil, fmt.Errorf("failed to build primary address: %w", err)
+	}
+
+	// Generate subaddresses
+	subaddresses := make([]string, 0, numSubaddresses)
+	for i := 1; i <= numSubaddresses; i++ {
+		subaddr, err := deriveMoneroSubaddress(viewSecKey, spendPubKey, 0, uint32(i))
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive subaddress (0,%d): %w", i, err)
+		}
+		subaddresses = append(subaddresses, subaddr)
+	}
+
+	return &MoneroKeys{
+		PrimaryAddress: primaryAddr,
+		Subaddresses:   subaddresses,
+	}, nil
+}
+
+// buildMoneroAddress constructs a Monero address from public keys and a prefix.
+func buildMoneroAddress(prefix byte, spendPubKey, viewPubKey []byte) (string, error) {
+	addrData := make([]byte, 65) //nolint:mnd // 1 + 32 + 32
+	addrData[0] = prefix
+	copy(addrData[1:33], spendPubKey)
+	copy(addrData[33:65], viewPubKey)
+
+	checksum, err := utils.Keccak256Hash(addrData)
+	if err != nil {
+		return "", fmt.Errorf("failed to calculate checksum: %w", err)
+	}
+
+	fullAddr := append(addrData, checksum[:4]...)
+	encoded, err := utils.EncodeMoneroAddress(fullAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode address: %w", err)
+	}
+
+	return string(encoded), nil
+}
+
+// deriveMoneroSubaddress derives a Monero subaddress at the given index.
+// Subaddresses use a different derivation: D_ij = B + m*G, C_ij = a*D_ij
+// where m = Hs("SubAddr" || a || i || j), B is spend public, a is view secret.
+func deriveMoneroSubaddress(viewSecretKey, spendPubKey []byte, major, minor uint32) (string, error) {
+	if major == 0 && minor == 0 {
+		return "", fmt.Errorf("(0,0) is the primary address, not a subaddress")
+	}
+
+	// Compute m = Hs("SubAddr" || view_secret || major || minor)
+	prefix := []byte("SubAddr\x00") // "SubAddr" with null terminator
+	majorBytes := make([]byte, 4)   //nolint:mnd
+	minorBytes := make([]byte, 4)   //nolint:mnd
+	binary.LittleEndian.PutUint32(majorBytes, major)
+	binary.LittleEndian.PutUint32(minorBytes, minor)
+
+	data := make([]byte, 0, len(prefix)+32+8) //nolint:mnd
+	data = append(data, prefix...)
+	data = append(data, viewSecretKey...)
+	data = append(data, majorBytes...)
+	data = append(data, minorBytes...)
+
+	// Hash to scalar: Hs(data) = sc_reduce32(keccak256(data))
+	hash, err := utils.Keccak256Hash(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash subaddress data: %w", err)
+	}
+	m := scReduce32(hash)
+
+	// Convert m to edwards25519 scalar
+	mScalar, err := edwards25519.NewScalar().SetCanonicalBytes(m)
+	if err != nil {
+		return "", fmt.Errorf("failed to create scalar from m: %w", err)
+	}
+
+	// Compute m*G (base point multiplication)
+	mG := edwards25519.NewIdentityPoint().ScalarBaseMult(mScalar)
+
+	// Parse spend public key as a point
+	spendPubPoint, err := edwards25519.NewIdentityPoint().SetBytes(spendPubKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse spend public key: %w", err)
+	}
+
+	// D_ij = B + m*G (subaddress spend public key)
+	subSpendPub := edwards25519.NewIdentityPoint().Add(spendPubPoint, mG)
+
+	// Parse view secret key as scalar
+	viewSecScalar, err := edwards25519.NewScalar().SetCanonicalBytes(viewSecretKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create scalar from view secret: %w", err)
+	}
+
+	// C_ij = a * D_ij (subaddress view public key)
+	subViewPub := edwards25519.NewIdentityPoint().ScalarMult(viewSecScalar, subSpendPub)
+
+	// Build subaddress with prefix 0x2A (42 decimal)
+	return buildMoneroAddress(0x2A, subSpendPub.Bytes(), subViewPub.Bytes()) //nolint:mnd
+}
+
+// scReduce32 reduces a 32-byte value to a valid Ed25519 scalar.
+// This ensures the value is in canonical form (< L) for use as a Monero private key.
+// L = 2^252 + 27742317777372353535851937790883648493 (the Ed25519 curve order).
+//
+// This function performs proper modular reduction mod L using the edwards25519 library.
+// The input bytes are padded to 64 bytes and then reduced using SetUniformBytes,
+// which performs the correct sc_reduce operation.
+func scReduce32(input []byte) []byte {
+	if len(input) != 32 { //nolint:mnd
+		return input
+	}
+
+	// First try to interpret as a canonical scalar directly
+	scalar, err := edwards25519.NewScalar().SetCanonicalBytes(input)
+	if err == nil {
+		return scalar.Bytes()
+	}
+
+	// If not canonical, perform proper modular reduction.
+	// Pad to 64 bytes and use SetUniformBytes which performs sc_reduce.
+	padded := make([]byte, 64) //nolint:mnd
+	copy(padded, input)
+
+	scalar, err = edwards25519.NewScalar().SetUniformBytes(padded)
+	if err != nil {
+		// Fallback: clear high bits (should rarely happen)
+		result := make([]byte, 32) //nolint:mnd
+		copy(result, input)
+		result[31] &= 0x0F
+		return result
+	}
+
+	return scalar.Bytes()
 }
 
 // Extended key version bytes for SLIP-0132 encoding.

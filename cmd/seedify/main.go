@@ -699,16 +699,20 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		fmt.Println(mnemonic)
 		fmt.Println()
 
-		// Derive and display Monero address for 16-word polyseed
+		// Derive and display Monero addresses for 16-word polyseed
 		if count == 16 && deriveXmr {
-			xmrAddr, err := seedify.DeriveMoneroAddress(mnemonic)
+			// Generate primary address plus 9 subaddresses
+			xmrKeys, err := seedify.DeriveMoneroKeys(mnemonic, 9) //nolint:mnd
 			if err != nil {
-				return fmt.Errorf("failed to derive Monero address from 16-word polyseed: %w", err)
+				return fmt.Errorf("failed to derive Monero keys from 16-word polyseed: %w", err)
 			}
 
-			fmt.Printf("[monero address from 16 word polyseed]\n")
+			fmt.Printf("[monero addresses from 16 word polyseed]\n")
 			fmt.Println()
-			fmt.Println(xmrAddr)
+			fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
+			for i, subaddr := range xmrKeys.Subaddresses {
+				fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, i+1)
+			}
 			fmt.Println()
 		}
 
