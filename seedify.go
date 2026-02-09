@@ -945,7 +945,7 @@ func DeriveTronAddress(mnemonic string, bip39Passphrase string) (string, error) 
 func encodeTronAddress(addrBytes []byte) string {
 	// Prepend Tron mainnet prefix (0x41)
 	payload := make([]byte, 0, 25) //nolint:mnd // 1 prefix + 20 address + 4 checksum
-	payload = append(payload, 0x41)
+	payload = append(payload, 0x41) //nolint:mnd // Tron mainnet address prefix
 	payload = append(payload, addrBytes...)
 
 	// Calculate checksum: first 4 bytes of double SHA256
