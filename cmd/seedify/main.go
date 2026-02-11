@@ -1179,10 +1179,10 @@ type dnsRecord struct {
 	P2WSH string `json:"p2wsh"`
 	// P2WSHPath is the BIP48 derivation path for P2WSH (m/48'/0'/0'/2')
 	P2WSHPath string `json:"p2wsh-path"`
-	// P2WSHXpub is the standard xpub at the P2WSH account level
-	P2WSHXpub string `json:"p2wsh-xpub"`
 	// P2WSHXFP is the master key fingerprint (first 4 bytes of HASH160 of master pubkey)
 	P2WSHXFP string `json:"p2wsh-xfp"`
+	// P2WSHXpub is the standard xpub at the P2WSH account level
+	P2WSHXpub string `json:"p2wsh-xpub"`
 	// Ethereum is the checksummed Ethereum address (starts with "0x")
 	Ethereum string `json:"ethereum"`
 	// Solana is the Base58-encoded Solana address
