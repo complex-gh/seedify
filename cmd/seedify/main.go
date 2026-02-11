@@ -49,6 +49,7 @@ var (
 	wordCountStr   string
 	seedPassphrase string
 	brave          bool
+	phrases        bool
 	nostr          bool
 	bitcoin        bool
 	ethereum       bool
@@ -80,6 +81,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --nostr
   seedify ~/.ssh/id_ed25519 --words 12 --seed-passphrase "my-passphrase"
   seedify ~/.ssh/id_ed25519 --brave
+  seedify ~/.ssh/id_ed25519 --phrases
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -112,6 +114,19 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				}
 
 				fmt.Println(mnemonic)
+				return nil
+			}
+
+			// Handle --phrases flag: print a curated set of seed phrases
+			// This is a special case that bypasses the unified output
+			if phrases {
+				err := generatePhrasesOutput(keyPath, seedPassphrase)
+				if err != nil {
+					if strings.Contains(err.Error(), "key is not password-protected") {
+						return formatPasswordError(err)
+					}
+					return err
+				}
 				return nil
 			}
 
@@ -329,6 +344,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&wordCountStr, "words", "w", "", "Word counts to generate (comma-separated: 12,15,18,21,24)")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
 	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync")
+	rootCmd.PersistentFlags().BoolVar(&phrases, "phrases", false, "Print curated seed phrases (12, 16, 24, Brave 25, Brave Wallet 24)")
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.PersistentFlags().BoolVar(&bitcoin, "btc", false, "Derive Bitcoin address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
@@ -526,6 +542,97 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 	default:
 		return "", fmt.Errorf("unknown key type: %v", key)
 	}
+}
+
+// printPEMPhrase prints a seed phrase wrapped in PEM-style BEGIN/END markers.
+// The label is used in both the BEGIN and END lines (e.g., "12-WORD SEED PHRASE").
+func printPEMPhrase(label string, phrase string) {
+	fmt.Printf("-----BEGIN %s-----\n%s\n-----END %s-----\n\n", label, phrase, label)
+}
+
+// generatePhrasesOutput generates a curated set of seed phrases from the SSH key.
+// It prints the following phrases in order:
+//  1. 12-word BIP39 seed phrase
+//  2. 16-word Polyseed seed phrase
+//  3. 24-word BIP39 seed phrase
+//  4. 24-word Brave Wallet seed phrase (wallet-prefixed, for Brave Wallet)
+//  5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
+//
+//nolint:funlen
+func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
+	// Parse the key once
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	// Check if key is password-protected (required)
+	isProtected, err := isKeyPasswordProtected(bts)
+	if err == nil && !isProtected {
+		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		// Key requires a password - ask for it and parse again with the same bytes
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return fmt.Errorf("unknown key type: %v", key)
+	}
+
+	// 1. 12-word seed phrase
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
+	}
+	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
+
+	// 2. 16-word seed phrase (Polyseed)
+	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
+	}
+	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
+
+	// 3. 24-word seed phrase (standard, no prefix)
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
+
+	// 4. 24-word Brave Wallet seed phrase (wallet-prefixed, for Brave Wallet)
+	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate brave wallet 24-word mnemonic: %w", err)
+	}
+	printPEMPhrase("24-WORD BRAVE-WALLET", walletMnemonic)
+
+	// 5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
+	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+	if err != nil {
+		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
+	}
+	printPEMPhrase("25-WORD BRAVE-SYNC", braveMnemonic)
+
+	return nil
 }
 
 func isPasswordError(err error) bool {
@@ -1068,6 +1175,14 @@ type dnsRecord struct {
 	Bitcoin string `json:"bitcoin"`
 	// Taproot is the Taproot P2TR address (starts with "bc1p")
 	Taproot string `json:"taproot"`
+	// P2WSH is the P2WSH (native SegWit multisig) address (starts with "bc1q")
+	P2WSH string `json:"p2wsh"`
+	// P2WSHPath is the BIP48 derivation path for P2WSH (m/48'/0'/0'/2')
+	P2WSHPath string `json:"p2wsh-path"`
+	// P2WSHXpub is the standard xpub at the P2WSH account level
+	P2WSHXpub string `json:"p2wsh-xpub"`
+	// P2WSHXFP is the master key fingerprint (first 4 bytes of HASH160 of master pubkey)
+	P2WSHXFP string `json:"p2wsh-xfp"`
 	// Ethereum is the checksummed Ethereum address (starts with "0x")
 	Ethereum string `json:"ethereum"`
 	// Solana is the Base58-encoded Solana address
@@ -1149,6 +1264,22 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
 	}
 
+	// Derive P2WSH (native SegWit multisig) address and extended keys at m/48'/0'/0'/2'
+	p2wshKeys, err := seedify.DeriveBitcoinMultisigNativeSegwitKeys(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Bitcoin P2WSH address: %w", err)
+	}
+	p2wshExtended, err := seedify.DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Bitcoin P2WSH extended keys: %w", err)
+	}
+
+	// Derive master key fingerprint (first 4 bytes of HASH160 of master pubkey)
+	masterFP, err := seedify.DeriveBitcoinMasterFingerprint(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive master key fingerprint: %w", err)
+	}
+
 	// Derive Ethereum address
 	ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
 	if err != nil {
@@ -1176,6 +1307,10 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		HexPubKey:  nostrKeys.PubKeyHex,
 		Bitcoin:    btcAddr,
 		Taproot:    taprootAddr,
+		P2WSH:      p2wshKeys.Address,
+		P2WSHPath:  "m/48'/0'/0'/2'",
+		P2WSHXpub:  p2wshExtended.StandardPublicKey,
+		P2WSHXFP:   masterFP,
 		Ethereum:   ethAddr,
 		Solana:     solAddr,
 		Tron:       tronAddr,
