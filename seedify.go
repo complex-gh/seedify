@@ -1626,6 +1626,44 @@ func encodeExtendedKey(key *hdkeychain.ExtendedKey, version uint32) string {
 	return base58.Encode(result)
 }
 
+// DeriveBitcoinMasterFingerprint derives the master key fingerprint from a BIP39 mnemonic.
+// The fingerprint is the first 4 bytes of HASH160(compressed_master_public_key),
+// encoded as a lowercase hex string (8 characters). This is commonly used in
+// wallet descriptors and PSBTs (e.g., [d219d86d/48'/0'/0'/2']xpub...).
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - fingerprint: The 4-byte master fingerprint as a lowercase hex string
+//   - error: Any error that occurred during derivation
+func DeriveBitcoinMasterFingerprint(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Get the master public key
+	masterPubKey, err := masterKey.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get master public key: %w", err)
+	}
+
+	// Compute HASH160 of the compressed public key and take the first 4 bytes
+	pubKeyHash := btcutil.Hash160(masterPubKey.SerializeCompressed())
+	fingerprint := pubKeyHash[:4]
+
+	return hex.EncodeToString(fingerprint), nil
+}
+
 // DeriveBitcoinMasterExtendedKeys derives the master extended public and private keys.
 // Returns xpub and xprv at the master level (m).
 // This is the root of the HD wallet tree, before any BIP44/49/84 derivation.
