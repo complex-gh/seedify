@@ -102,6 +102,40 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
 func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, brave bool) (string, error) {
+	// Delegate to ToMnemonicWithPrefix with "brave" as the prefix when brave is true
+	var prefix string
+	if brave {
+		prefix = "brave"
+	}
+	return ToMnemonicWithPrefix(key, wordCount, seedPassphrase, prefix)
+}
+
+// ToMnemonicWithPrefix takes an ed25519 private key and returns a mnemonic
+// phrase of the specified word count. It is a generalization of ToMnemonicWithLength
+// that accepts an arbitrary prefix string instead of a boolean brave flag.
+//
+// If prefix is non-empty, the hash of the prefix string is prepended to the entropy
+// (similar to how the word count is prepended) to generate a completely different
+// set of words. This allows generating distinct seed phrases for different
+// applications (e.g., "brave" for Brave Sync, "wallet" for Brave Wallet).
+//
+// If seedPassphrase is provided (non-empty), it will be combined with the
+// SSH key seed to add additional entropy: ENTROPY(seed-passphrase) + ENTROPY(ssh-key).
+//
+// The word count is prepended to the entropy to ensure different word counts
+// generate completely different words, not just truncated versions of the same phrase.
+// Exception: For 24 words (when prefix is empty), the raw seed is used directly
+// without prepending word count or hashing.
+//
+// Valid word counts are: 12, 15, 16, 18, 21, or 24.
+// The entropy size is determined by the word count:
+//   - 12 words = 128 bits (16 bytes) - BIP39
+//   - 15 words = 160 bits (20 bytes) - BIP39
+//   - 16 words = 150 bits (19 bytes) - Polyseed format
+//   - 18 words = 192 bits (24 bytes) - BIP39
+//   - 21 words = 224 bits (28 bytes) - BIP39
+//   - 24 words = 256 bits (32 bytes) - BIP39
+func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, prefix string) (string, error) {
 	// Get the full seed (32 bytes)
 	fullSeed := key.Seed()
 
@@ -114,9 +148,9 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 		copy(combinedSeed, fullSeed)
 	}
 
-	// Special handling for 24 words: use raw seed directly
+	// Special handling for 24 words with no prefix: use raw seed directly
 	// Skip word count prefix and hashing to ensure compatibility
-	if wordCount == 24 && !brave {
+	if wordCount == 24 && prefix == "" {
 		// Use the combined seed directly as entropy (32 bytes for 24 words)
 		words, err := bip39.NewMnemonic(combinedSeed)
 		if err != nil {
@@ -132,16 +166,16 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 	wordCountBytes := make([]byte, wordCountBytesSize)
 	binary.BigEndian.PutUint16(wordCountBytes, uint16(wordCount)) //nolint:gosec
 
-	// If brave flag is set, prepend the hash of "brave" (similar to word count)
+	// If a prefix is provided, prepend its hash (similar to word count)
 	var prefixBytes []byte
-	if brave {
-		// Hash "brave" and take the first 2 bytes (same size as word count)
-		braveHash := sha256.Sum256([]byte("brave"))
-		bravePrefix := braveHash[:2]
-		// Combine brave prefix with word count prefix
-		prefixBytes = make([]byte, len(bravePrefix)+len(wordCountBytes))
-		copy(prefixBytes, bravePrefix)
-		copy(prefixBytes[len(bravePrefix):], wordCountBytes)
+	if prefix != "" {
+		// Hash the prefix string and take the first 2 bytes (same size as word count)
+		prefixHash := sha256.Sum256([]byte(prefix))
+		hashPrefix := prefixHash[:2]
+		// Combine hash prefix with word count prefix
+		prefixBytes = make([]byte, len(hashPrefix)+len(wordCountBytes))
+		copy(prefixBytes, hashPrefix)
+		copy(prefixBytes[len(hashPrefix):], wordCountBytes)
 	} else {
 		prefixBytes = wordCountBytes
 	}
