@@ -616,21 +616,21 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
-	printPEMPhrase("24-WORD SEED PHRASE", mnemonic24)
+	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
 
 	// 4. 24-word Brave Wallet seed phrase (wallet-prefixed, for Brave Wallet)
 	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate brave wallet 24-word mnemonic: %w", err)
 	}
-	printPEMPhrase("24-WORD BRAVE WALLET SEED PHRASE", walletMnemonic)
+	printPEMPhrase("24-WORD BRAVE-WALLET", walletMnemonic)
 
 	// 5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
 	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 	}
-	printPEMPhrase("25-WORD BRAVE SYNC PHRASE", braveMnemonic)
+	printPEMPhrase("25-WORD BRAVE-SYNC", braveMnemonic)
 
 	return nil
 }
