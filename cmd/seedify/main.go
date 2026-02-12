@@ -910,6 +910,127 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				fmt.Println(tronAddr)
 				fmt.Println()
 			}
+
+			// Litecoin address (native SegWit)
+			ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Litecoin address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[litecoin address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(ltcAddr)
+			fmt.Println()
+
+			// Dogecoin address
+			dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Dogecoin address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[dogecoin address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(dogeAddr)
+			fmt.Println()
+
+			// Cosmos address
+			cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Cosmos address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[cosmos address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(cosmosAddr)
+			fmt.Println()
+
+			// Noble address
+			nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Noble address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[noble address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(nobleAddr)
+			fmt.Println()
+
+			// EVM-compatible chain addresses (reuse Ethereum address)
+			if deriveEth {
+				// Re-derive Ethereum address if not already available in this scope
+				evmAddr, evmErr := seedify.DeriveEthereumAddress(mnemonic, "")
+				if evmErr != nil {
+					return fmt.Errorf("failed to derive EVM address from 24-word seed: %w", evmErr)
+				}
+
+				fmt.Printf("[arbitrum address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[avalanche address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[base address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[bnbchain address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[cronos address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[optimism address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+
+				fmt.Printf("[polygon address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(evmAddr)
+				fmt.Println()
+			}
+
+			// Sui address
+			suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Sui address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[sui address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(suiAddr)
+			fmt.Println()
+
+			// Stellar address
+			xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Stellar address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[stellar address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(xlmAddr)
+			fmt.Println()
+
+			// Ripple address
+			xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Ripple address from 24-word seed: %w", err)
+			}
+
+			fmt.Printf("[ripple address from 24 word seed]\n")
+			fmt.Println()
+			fmt.Println(xrpAddr)
+			fmt.Println()
 		}
 
 		// Add blank line between word counts (except after the last one, unless brave is also shown)
@@ -1160,35 +1281,38 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 
 // dnsRecord represents the JSON structure for DNS output.
 // Fields are ordered to match the expected DNS JSON format.
+//
+//nolint:govet
 type dnsRecord struct {
-	// SSHEd25519 is the base64-encoded SSH public key blob
 	SSHEd25519 string `json:"ssh-ed25519"`
-	// Npub is the Nostr public key in bech32 format
-	Npub string `json:"npub"`
-	// NpubKey is a duplicate of Npub for DNS compatibility
-	NpubKey string `json:"npubkey"`
-	// HexPub is the Nostr public key in hexadecimal format
-	HexPub string `json:"hexpub"`
-	// HexPubKey is a duplicate of HexPub for DNS compatibility
-	HexPubKey string `json:"hexpubkey"`
-	// Bitcoin is the native SegWit P2WPKH address (starts with "bc1q")
-	Bitcoin string `json:"bitcoin"`
-	// Taproot is the Taproot P2TR address (starts with "bc1p")
-	Taproot string `json:"taproot"`
-	// P2WSH is the P2WSH (native SegWit multisig) address (starts with "bc1q")
-	P2WSH string `json:"p2wsh"`
-	// P2WSHPath is the BIP48 derivation path for P2WSH (m/48'/0'/0'/2')
-	P2WSHPath string `json:"p2wsh-path"`
-	// P2WSHXFP is the master key fingerprint (first 4 bytes of HASH160 of master pubkey)
-	P2WSHXFP string `json:"p2wsh-xfp"`
-	// P2WSHXpub is the standard xpub at the P2WSH account level
-	P2WSHXpub string `json:"p2wsh-xpub"`
-	// Ethereum is the checksummed Ethereum address (starts with "0x")
-	Ethereum string `json:"ethereum"`
-	// Solana is the Base58-encoded Solana address
-	Solana string `json:"solana"`
-	// Tron is the Base58Check-encoded Tron address (starts with "T")
-	Tron string `json:"tron"`
+	Npub       string `json:"npub"`
+	NpubKey    string `json:"npubkey"`
+	HexPub     string `json:"hexpub"`
+	HexPubKey  string `json:"hexpubkey"`
+	Bitcoin    string `json:"bitcoin"`
+	Taproot    string `json:"taproot"`
+	P2WSH      string `json:"p2wsh"`
+	P2WSHPath  string `json:"p2wsh-path"`
+	P2WSHXFP   string `json:"p2wsh-xfp"`
+	P2WSHXpub  string `json:"p2wsh-xpub"`
+	Litecoin   string `json:"litecoin"`
+	Dogecoin   string `json:"dogecoin"`
+	Monero     string `json:"monero"`
+	Cosmos     string `json:"cosmos"`
+	Noble      string `json:"noble"`
+	Arbitrum   string `json:"arbitrum"`
+	Avalanche  string `json:"avalanche"`
+	Base       string `json:"base"`
+	BNBChain   string `json:"bnbchain"`
+	Cronos     string `json:"cronos"`
+	Ethereum   string `json:"ethereum"`
+	Optimism   string `json:"optimism"`
+	Polygon    string `json:"polygon"`
+	Solana     string `json:"solana"`
+	Sui        string `json:"sui"`
+	Tron       string `json:"tron"`
+	Stellar    string `json:"stellar"`
+	Ripple     string `json:"ripple"`
 }
 
 // generateDNSJSON generates a DNS JSON string containing public keys and addresses
@@ -1280,7 +1404,41 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive master key fingerprint: %w", err)
 	}
 
-	// Derive Ethereum address
+	// Derive Litecoin address
+	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Litecoin address: %w", err)
+	}
+
+	// Derive Dogecoin address
+	dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Dogecoin address: %w", err)
+	}
+
+	// Derive Monero address from 16-word polyseed
+	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("could not generate 16-word polyseed: %w", err)
+	}
+	xmrAddr, err := seedify.DeriveMoneroAddress(polyseedMnemonic)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Monero address: %w", err)
+	}
+
+	// Derive Cosmos address
+	cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Cosmos address: %w", err)
+	}
+
+	// Derive Noble address
+	nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Noble address: %w", err)
+	}
+
+	// Derive Ethereum address (also used for EVM-compatible chains)
 	ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Ethereum address: %w", err)
@@ -1292,10 +1450,28 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Solana address: %w", err)
 	}
 
+	// Derive Sui address
+	suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Sui address: %w", err)
+	}
+
 	// Derive Tron address
 	tronAddr, err := seedify.DeriveTronAddress(mnemonic, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Tron address: %w", err)
+	}
+
+	// Derive Stellar address
+	xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Stellar address: %w", err)
+	}
+
+	// Derive Ripple address
+	xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Ripple address: %w", err)
 	}
 
 	// Build the DNS record struct
@@ -1309,11 +1485,26 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		Taproot:    taprootAddr,
 		P2WSH:      p2wshKeys.Address,
 		P2WSHPath:  "m/48'/0'/0'/2'",
-		P2WSHXpub:  p2wshExtended.StandardPublicKey,
 		P2WSHXFP:   masterFP,
+		P2WSHXpub:  p2wshExtended.StandardPublicKey,
+		Litecoin:   ltcAddr,
+		Dogecoin:   dogeAddr,
+		Monero:     xmrAddr,
+		Cosmos:     cosmosAddr,
+		Noble:      nobleAddr,
+		Arbitrum:   ethAddr,
+		Avalanche:  ethAddr,
+		Base:       ethAddr,
+		BNBChain:   ethAddr,
+		Cronos:     ethAddr,
 		Ethereum:   ethAddr,
+		Optimism:   ethAddr,
+		Polygon:    ethAddr,
 		Solana:     solAddr,
+		Sui:        suiAddr,
 		Tron:       tronAddr,
+		Stellar:    xlmAddr,
+		Ripple:     xrpAddr,
 	}
 
 	// Marshal to indented JSON

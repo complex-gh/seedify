@@ -19,11 +19,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"filippo.io/edwards25519"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
@@ -36,6 +38,7 @@ import (
 	hdwallet "github.com/stephenlacy/go-ethereum-hdwallet"
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
+	"golang.org/x/crypto/blake2b"
 )
 
 // Constants for mnemonic generation.
@@ -2260,4 +2263,386 @@ func DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic string, bip39Passphr
 		StandardPublicKey:  accountPubKey.String(),
 		StandardPrivateKey: accountKey.String(),
 	}, nil
+}
+
+// deriveBIPAddress is a helper that derives a secp256k1 address at
+// m/purpose'/coinType'/0'/0/0 and returns the HASH160 of the compressed public key.
+// This is the common pattern for BIP44/BIP84-based chains.
+func deriveBIPAddress(mnemonic string, bip39Passphrase string, purpose uint32, coinType uint32) (pubKeyHash []byte, err error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Create master key from seed
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive path: m/purpose'/coinType'/0'/0/0
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + purpose,  // purpose (e.g. 44 for BIP44, 84 for BIP84)
+		hdkeychain.HardenedKeyStart + coinType, // coin type
+		hdkeychain.HardenedKeyStart + 0,        // account
+		0,                                      // change (external)
+		0,                                      // address index
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive address key: %w", err)
+	}
+
+	// Get the compressed public key
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	compressed := pubKey.SerializeCompressed()
+	hash := btcutil.Hash160(compressed)
+
+	return hash, nil
+}
+
+// deriveBIP44Address is a convenience wrapper around deriveBIPAddress
+// for BIP44 (purpose 44) derivation paths: m/44'/coinType'/0'/0/0.
+func deriveBIP44Address(mnemonic string, bip39Passphrase string, coinType uint32) (pubKeyHash []byte, err error) {
+	return deriveBIPAddress(mnemonic, bip39Passphrase, 44, coinType) //nolint:mnd
+}
+
+// encodeBase58Check encodes data with a version byte using Base58Check encoding.
+// This is the standard encoding for Bitcoin-like addresses:
+// Base58(version || payload || checksum) where checksum = SHA256(SHA256(version || payload))[:4].
+func encodeBase58Check(version byte, payload []byte) string {
+	// Prepend version byte
+	data := make([]byte, 0, 1+len(payload)+4) //nolint:mnd
+	data = append(data, version)
+	data = append(data, payload...)
+
+	// Calculate checksum: first 4 bytes of double SHA256
+	firstHash := sha256.Sum256(data)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+
+	// Append checksum
+	data = append(data, checksum...)
+
+	return base58.Encode(data)
+}
+
+// encodeBech32Address encodes a witness program as a bech32 address with the given
+// human-readable part (HRP) and witness version.
+func encodeBech32Address(hrp string, witnessVersion byte, witnessProgram []byte) (string, error) {
+	// Convert the witness program to 5-bit groups for bech32 encoding
+	converted, err := bech32.ConvertBits(witnessProgram, 8, 5, true) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to convert bits: %w", err)
+	}
+
+	// Prepend witness version
+	data := make([]byte, 0, 1+len(converted))
+	data = append(data, witnessVersion)
+	data = append(data, converted...)
+
+	// Encode as bech32
+	encoded, err := bech32.Encode(hrp, data)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode bech32: %w", err)
+	}
+
+	return encoded, nil
+}
+
+// DeriveLitecoinAddress derives a Litecoin native SegWit (P2WPKH) address from a BIP39 mnemonic.
+// The function follows BIP84 standard with derivation path m/84'/2'/0'/0/0.
+// It returns a Bech32 address (starts with "ltc1") for Litecoin mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Litecoin P2WPKH address (starts with "ltc1")
+//   - error: Any error that occurred during derivation
+func DeriveLitecoinAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Derive at m/84'/2'/0'/0/0 (BIP84 native SegWit, coin type 2 = Litecoin)
+	pubKeyHash, err := deriveBIPAddress(mnemonic, bip39Passphrase, 84, 2) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Litecoin key: %w", err)
+	}
+
+	// Encode as Bech32 with HRP "ltc" and witness version 0
+	addr, err := encodeBech32Address("ltc", 0, pubKeyHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode Litecoin address: %w", err)
+	}
+
+	return addr, nil
+}
+
+// DeriveDogecoinAddress derives a Dogecoin P2PKH address from a BIP39 mnemonic.
+// The function follows BIP44 standard with derivation path m/44'/3'/0'/0/0.
+// It returns a Base58Check address (starts with "D") for Dogecoin mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Dogecoin P2PKH address (starts with "D")
+//   - error: Any error that occurred during derivation
+func DeriveDogecoinAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Derive at m/44'/3'/0'/0/0 (coin type 3 = Dogecoin)
+	pubKeyHash, err := deriveBIP44Address(mnemonic, bip39Passphrase, 3) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Dogecoin key: %w", err)
+	}
+
+	// Encode as Base58Check with version byte 0x1E (Dogecoin mainnet P2PKH, produces "D...")
+	return encodeBase58Check(0x1E, pubKeyHash), nil //nolint:mnd
+}
+
+// rippleAlphabet is the custom Base58 alphabet used by the XRP Ledger.
+const rippleAlphabet = "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz"
+
+// DeriveRippleAddress derives an XRP Ledger address from a BIP39 mnemonic.
+// The function follows BIP44 standard with derivation path m/44'/144'/0'/0/0.
+// It returns a Ripple Base58Check address (starts with "r").
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The XRP address (starts with "r")
+//   - error: Any error that occurred during derivation
+func DeriveRippleAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Derive at m/44'/144'/0'/0/0 (coin type 144 = XRP)
+	pubKeyHash, err := deriveBIP44Address(mnemonic, bip39Passphrase, 144) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Ripple key: %w", err)
+	}
+
+	// Encode as Ripple Base58Check with version byte 0x00
+	return encodeRippleBase58Check(0x00, pubKeyHash), nil //nolint:mnd
+}
+
+// encodeRippleBase58Check encodes data using Ripple's custom Base58Check format.
+// It uses the same checksum scheme as Bitcoin (double SHA256) but a different alphabet.
+func encodeRippleBase58Check(version byte, payload []byte) string {
+	// Build versioned payload
+	data := make([]byte, 0, 1+len(payload)+4) //nolint:mnd
+	data = append(data, version)
+	data = append(data, payload...)
+
+	// Calculate checksum: first 4 bytes of double SHA256
+	firstHash := sha256.Sum256(data)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+	data = append(data, checksum...)
+
+	// Encode using Ripple's custom Base58 alphabet
+	return encodeBase58WithAlphabet(data, rippleAlphabet)
+}
+
+// encodeBase58WithAlphabet encodes bytes using a custom Base58 alphabet.
+func encodeBase58WithAlphabet(data []byte, alphabet string) string {
+	// Use standard base58 encoding then translate the alphabet
+	standardAlphabet := "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	encoded := base58.Encode(data)
+
+	// Build translation table from standard to custom alphabet
+	var result strings.Builder
+	result.Grow(len(encoded))
+	for _, c := range encoded {
+		idx := strings.IndexRune(standardAlphabet, c)
+		if idx >= 0 {
+			result.WriteByte(alphabet[idx])
+		}
+	}
+
+	return result.String()
+}
+
+// DeriveCosmosAddress derives a Cosmos (ATOM) address from a BIP39 mnemonic.
+// The function follows BIP44 standard with derivation path m/44'/118'/0'/0/0.
+// It returns a Bech32 address with the "cosmos" prefix (starts with "cosmos1").
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Cosmos address (starts with "cosmos1")
+//   - error: Any error that occurred during derivation
+func DeriveCosmosAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	return deriveCosmosBech32Address(mnemonic, bip39Passphrase, 118, "cosmos") //nolint:mnd
+}
+
+// DeriveNobleAddress derives a Noble address from a BIP39 mnemonic.
+// Noble uses the same key derivation as Cosmos (coin type 118) but with "noble" bech32 prefix.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Noble address (starts with "noble1")
+//   - error: Any error that occurred during derivation
+func DeriveNobleAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	return deriveCosmosBech32Address(mnemonic, bip39Passphrase, 118, "noble") //nolint:mnd
+}
+
+// deriveCosmosBech32Address derives a Cosmos-ecosystem Bech32 address.
+// It uses secp256k1 at m/44'/coinType'/0'/0/0 and encodes the HASH160 of the
+// compressed public key as Bech32 with the given human-readable prefix.
+func deriveCosmosBech32Address(mnemonic string, bip39Passphrase string, coinType uint32, hrp string) (string, error) {
+	// Derive the key at m/44'/coinType'/0'/0/0
+	pubKeyHash, err := deriveBIP44Address(mnemonic, bip39Passphrase, coinType)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive %s key: %w", hrp, err)
+	}
+
+	// Convert the 20-byte hash to 5-bit groups for bech32 encoding
+	converted, err := bech32.ConvertBits(pubKeyHash, 8, 5, true) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to convert bits for %s address: %w", hrp, err)
+	}
+
+	// Encode as bech32 (no witness version prefix for Cosmos)
+	encoded, err := bech32.Encode(hrp, converted)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode %s address: %w", hrp, err)
+	}
+
+	return encoded, nil
+}
+
+// DeriveStellarAddress derives a Stellar (XLM) address from a BIP39 mnemonic.
+// The function follows SEP-0005 standard with derivation path m/44'/148'/0'
+// using SLIP-0010 Ed25519 derivation.
+// It returns a StrKey-encoded public key (starts with "G").
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Stellar address (starts with "G")
+//   - error: Any error that occurred during derivation
+func DeriveStellarAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Derive Ed25519 key using SLIP-0010 at m/44'/148'/0' (SEP-0005)
+	key := deriveEd25519Key(seed, []uint32{44, 148, 0})
+
+	// Generate Ed25519 public key from the derived private key
+	privateKey := ed25519.NewKeyFromSeed(key)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+
+	// Encode using Stellar StrKey format (version byte 0x30 = 'G' prefix for account ID)
+	return encodeStellarStrKey(0x30, publicKey), nil //nolint:mnd
+}
+
+// encodeStellarStrKey encodes raw bytes using Stellar's StrKey format.
+// StrKey = Base32(versionByte || payload || crc16_xmodem(versionByte || payload)).
+func encodeStellarStrKey(version byte, payload []byte) string {
+	// Build data: version byte + payload
+	data := make([]byte, 0, 1+len(payload))
+	data = append(data, version)
+	data = append(data, payload...)
+
+	// Calculate CRC16-XMODEM checksum
+	checksum := crc16xmodem(data)
+	checksumBytes := []byte{byte(checksum & 0xFF), byte(checksum >> 8)} //nolint:mnd
+
+	// Append checksum (little-endian)
+	data = append(data, checksumBytes...)
+
+	// Encode as Base32 (no padding)
+	return base32Encode(data)
+}
+
+// crc16xmodem calculates the CRC16-XMODEM checksum used by Stellar StrKey.
+func crc16xmodem(data []byte) uint16 {
+	crc := uint16(0x0000) //nolint:mnd
+	for _, b := range data {
+		crc ^= uint16(b) << 8 //nolint:mnd
+		for i := 0; i < 8; i++ {
+			if crc&0x8000 != 0 {
+				crc = (crc << 1) ^ 0x1021 //nolint:mnd
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc
+}
+
+// base32Encode encodes bytes using RFC 4648 Base32 without padding.
+func base32Encode(data []byte) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	var result strings.Builder
+	result.Grow((len(data)*8 + 4) / 5) //nolint:mnd
+
+	bits := 0
+	buffer := 0
+
+	for _, b := range data {
+		buffer = (buffer << 8) | int(b) //nolint:mnd
+		bits += 8
+		for bits >= 5 {
+			bits -= 5
+			result.WriteByte(alphabet[(buffer>>bits)&0x1F])
+		}
+	}
+
+	// Handle remaining bits
+	if bits > 0 {
+		result.WriteByte(alphabet[(buffer<<(5-bits))&0x1F]) //nolint:mnd
+	}
+
+	return result.String()
+}
+
+// DeriveSuiAddress derives a Sui address from a BIP39 mnemonic.
+// The function follows SLIP-0010 Ed25519 derivation with path m/44'/784'/0'/0'/0'.
+// It returns an address formatted as "0x" + hex(Blake2b-256(0x00 || pubkey)).
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Sui address (starts with "0x")
+//   - error: Any error that occurred during derivation
+func DeriveSuiAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Validate mnemonic and convert to BIP39 seed with optional passphrase
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	// Derive Ed25519 key using SLIP-0010 at m/44'/784'/0'/0'/0'
+	key := deriveEd25519Key(seed, []uint32{44, 784, 0, 0, 0})
+
+	// Generate Ed25519 public key from the derived private key
+	privateKey := ed25519.NewKeyFromSeed(key)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+
+	// Sui address = Blake2b-256(flag_byte || public_key)
+	// Flag byte 0x00 indicates Ed25519 scheme
+	payload := make([]byte, 0, 1+len(publicKey))
+	payload = append(payload, 0x00) //nolint:mnd // Ed25519 flag byte
+	payload = append(payload, publicKey...)
+
+	hash := blake2b.Sum256(payload)
+
+	return fmt.Sprintf("0x%s", hex.EncodeToString(hash[:])), nil
 }
