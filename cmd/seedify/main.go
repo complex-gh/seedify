@@ -546,8 +546,10 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 
 // printPEMPhrase prints a seed phrase wrapped in PEM-style BEGIN/END markers.
 // The label is used in both the BEGIN and END lines (e.g., "12-WORD SEED PHRASE").
+// Note: This function does not add extra spacing; callers are responsible for
+// managing blank lines between outputs.
 func printPEMPhrase(label string, phrase string) {
-	fmt.Printf("-----BEGIN %s-----\n%s\n-----END %s-----\n\n", label, phrase, label)
+	fmt.Printf("-----BEGIN %s-----\n%s\n-----END %s-----\n", label, phrase, label)
 }
 
 // generatePhrasesOutput generates a curated set of seed phrases from the SSH key.
@@ -602,6 +604,8 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
+	// 2 empty lines before the first output
+	fmt.Print("\n\n")
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
 
 	// 2. 16-word seed phrase (Polyseed)
@@ -609,6 +613,8 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
 	}
+	// 2 empty lines between outputs
+	fmt.Print("\n\n")
 	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
 
 	// 3. 24-word seed phrase (standard, no prefix)
@@ -616,6 +622,8 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
+	// 2 empty lines between outputs
+	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
 
 	// 4. 24-word Brave Wallet seed phrase (wallet-prefixed, for Brave Wallet)
@@ -623,6 +631,8 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate brave wallet 24-word mnemonic: %w", err)
 	}
+	// 2 empty lines between outputs
+	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD BRAVE-WALLET", walletMnemonic)
 
 	// 5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
@@ -630,7 +640,12 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 	}
+	// 2 empty lines between outputs
+	fmt.Print("\n\n")
 	printPEMPhrase("25-WORD BRAVE-SYNC", braveMnemonic)
+
+	// 2 empty lines after the last output
+	fmt.Print("\n\n")
 
 	return nil
 }
