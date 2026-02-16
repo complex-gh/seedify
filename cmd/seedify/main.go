@@ -49,7 +49,7 @@ var (
 	wordCountStr   string
 	seedPassphrase string
 	brave          bool
-	phrases        bool
+	full           bool
 	nostr          bool
 	bitcoin        bool
 	ethereum       bool
@@ -81,7 +81,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --nostr
   seedify ~/.ssh/id_ed25519 --words 12 --seed-passphrase "my-passphrase"
   seedify ~/.ssh/id_ed25519 --brave
-  seedify ~/.ssh/id_ed25519 --phrases
+  seedify ~/.ssh/id_ed25519 --full
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -117,19 +117,6 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return nil
 			}
 
-			// Handle --phrases flag: print a curated set of seed phrases
-			// This is a special case that bypasses the unified output
-			if phrases {
-				err := generatePhrasesOutput(keyPath, seedPassphrase)
-				if err != nil {
-					if strings.Contains(err.Error(), "key is not password-protected") {
-						return formatPasswordError(err)
-					}
-					return err
-				}
-				return nil
-			}
-
 			// Handle --dns flag: output public keys and addresses as DNS JSON
 			// This is a special case that bypasses the unified output
 			if dns {
@@ -145,43 +132,59 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return nil
 			}
 
-			// Check if any derivation flags were explicitly provided
+			// Default: print curated seed phrases; with btc/eth/nostr/sol/tron/xmr flags,
+			// also show the relevant portions of the full output for those chains
+			if !full {
+				hasDerivationFlags := bitcoin || ethereum || nostr || solana || tron || monero
+				if hasDerivationFlags {
+					err := generatePhrasesWithDerivations(keyPath, seedPassphrase,
+						nostr, bitcoin, ethereum, solana, tron, monero)
+					if err != nil {
+						if strings.Contains(err.Error(), "key is not password-protected") {
+							return formatPasswordError(err)
+						}
+						return err
+					}
+				} else {
+					err := generatePhrasesOutput(keyPath, seedPassphrase)
+					if err != nil {
+						if strings.Contains(err.Error(), "key is not password-protected") {
+							return formatPasswordError(err)
+						}
+						return err
+					}
+				}
+				return nil
+			}
+
+			// --full: generate unified output (seed phrases + wallet derivations)
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
 			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || dns
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
-			// Determine which derivations to show
-			// If no flags provided: show all derivations (all word counts + nostr + brave)
-			// If flags provided: show only specified derivations
 			var wordCounts []int
 			var deriveNostr bool
 			var showBrave bool
 			var deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool
 
 			if !hasAnyDerivationFlags {
-				// No flags provided - show all derivations including brave seed at the end
 				wordCounts = []int{12, 15, 16, 18, 21, 24}
 				deriveNostr = true
 				showBrave = true
-				// Derive all crypto addresses by default
 				deriveBtc = true
 				deriveEth = true
 				deriveSol = true
 				deriveTron = true
 				deriveXmr = true
 			} else {
-				// Flags provided - show only specified derivations
 				if hasWordsFlag {
-					// Parse word counts from flag
 					parsedCounts, err := parseWordCounts(wordCountStr)
 					if err != nil {
 						return fmt.Errorf("invalid word counts: %w", err)
 					}
 					wordCounts = parsedCounts
 				} else if hasCryptoFlags {
-					// If crypto flags are set but no word counts, ensure we have the needed word counts
-					// BTC needs 12 and 24 words; ETH, SOL, TRON need 24 words; XMR needs 16 words
 					wordCounts = []int{}
 					if bitcoin {
 						wordCounts = append(wordCounts, 12) //nolint:mnd
@@ -193,11 +196,8 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 						wordCounts = append(wordCounts, 24) //nolint:mnd
 					}
 				}
-				// Only derive nostr if the flag was explicitly set
 				deriveNostr = hasNostrFlag
-				// Don't show brave seed when specific flags are provided
 				showBrave = false
-				// Set crypto derivation flags
 				deriveBtc = bitcoin
 				deriveEth = ethereum
 				deriveSol = solana
@@ -205,7 +205,6 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				deriveXmr = monero
 			}
 
-			// Generate unified output (seed phrases + wallet derivations)
 			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
@@ -344,7 +343,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&wordCountStr, "words", "w", "", "Word counts to generate (comma-separated: 12,15,18,21,24)")
 	rootCmd.PersistentFlags().StringVar(&seedPassphrase, "seed-passphrase", "", "Passphrase to combine with SSH key seed for additional entropy")
 	rootCmd.PersistentFlags().BoolVar(&brave, "brave", false, "Generate 25-word phrase with Brave Sync")
-	rootCmd.PersistentFlags().BoolVar(&phrases, "phrases", false, "Print curated seed phrases (12, 16, 24, Brave 25, Brave Wallet 24)")
+	rootCmd.PersistentFlags().BoolVar(&full, "full", false, "Print full output (all word counts, Nostr keys, crypto derivations)")
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.PersistentFlags().BoolVar(&bitcoin, "btc", false, "Derive Bitcoin address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
@@ -646,6 +645,176 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 
 	// 2 empty lines after the last output
 	fmt.Print("\n\n")
+
+	return nil
+}
+
+// generatePhrasesWithDerivations outputs the curated seed phrases followed by
+// only the derivations requested by the flags (nostr, btc, eth, sol, tron, xmr).
+// Each flag shows the relevant portions of the full output for that chain.
+//
+//nolint:funlen
+func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriveNostr, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool) error {
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	isProtected, err := isKeyPasswordProtected(bts)
+	if err == nil && !isProtected {
+		return fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return fmt.Errorf("unknown key type: %v", key)
+	}
+
+	// Generate mnemonics for phrases and derivations
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
+	}
+	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
+	}
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
+	if err != nil {
+		return fmt.Errorf("could not generate brave wallet 24-word mnemonic: %w", err)
+	}
+	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+	if err != nil {
+		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
+	}
+
+	// Output curated phrases in PEM format
+	fmt.Print("\n\n")
+	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
+	fmt.Print("\n\n")
+	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
+	fmt.Print("\n\n")
+	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
+	fmt.Print("\n\n")
+	printPEMPhrase("24-WORD BRAVE-WALLET", walletMnemonic)
+	fmt.Print("\n\n")
+	printPEMPhrase("25-WORD BRAVE-SYNC", braveMnemonic)
+	fmt.Print("\n\n")
+
+	// Output requested derivations only
+	hasDerivations := deriveNostr || deriveBtc || deriveEth || deriveSol || deriveTron || deriveXmr
+	if !hasDerivations {
+		return nil
+	}
+
+	// Monero from 16-word polyseed
+	if deriveXmr {
+		xmrKeys, err := seedify.DeriveMoneroKeys(mnemonic16, 9) //nolint:mnd
+		if err != nil {
+			return fmt.Errorf("failed to derive Monero keys from 16-word polyseed: %w", err)
+		}
+		fmt.Printf("[monero addresses from 16 word polyseed]\n")
+		fmt.Println()
+		fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
+		for i, subaddr := range xmrKeys.Subaddresses {
+			fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, i+1)
+		}
+		fmt.Println()
+	}
+
+	// Nostr keys from 12 and 24 word
+	if deriveNostr {
+		for _, m := range []struct {
+			mnemonic string
+			count    int
+		}{
+			{mnemonic12, 12},
+			{mnemonic24, 24},
+		} {
+			nostrKeys, err := seedify.DeriveNostrKeysWithHex(m.mnemonic, "")
+			if err != nil {
+				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", m.count, err)
+			}
+			fmt.Printf("[nostr keys from %d word seed]\n", m.count)
+			fmt.Println()
+			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", nostrKeys.Npub)
+			fmt.Printf("└─ %s (hex)\n", nostrKeys.PubKeyHex)
+			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nostrKeys.Nsec)
+			fmt.Printf("└─ %s (hex)\n", nostrKeys.PrivKeyHex)
+			fmt.Println()
+		}
+	}
+
+	// Bitcoin from 12 and 24 word
+	if deriveBtc {
+		if err := displayBitcoinOutput(mnemonic12, 12); err != nil {
+			return err
+		}
+		if err := displayBitcoinOutput(mnemonic24, 24); err != nil {
+			return err
+		}
+	}
+
+	// Ethereum, Solana, Tron, and EVM chains from 24 word
+	if deriveEth {
+		ethAddr, err := seedify.DeriveEthereumAddress(mnemonic24, "")
+		if err != nil {
+			return fmt.Errorf("failed to derive Ethereum address from 24-word seed: %w", err)
+		}
+		fmt.Printf("[ethereum address from 24 word seed]\n")
+		fmt.Println()
+		fmt.Println(ethAddr)
+		fmt.Println()
+		for _, name := range []string{"arbitrum", "avalanche", "base", "bnbchain", "cronos", "optimism", "polygon"} {
+			fmt.Printf("[%s address from 24 word seed]\n", name)
+			fmt.Println()
+			fmt.Println(ethAddr)
+			fmt.Println()
+		}
+	}
+	if deriveSol {
+		solAddr, err := seedify.DeriveSolanaAddress(mnemonic24, "")
+		if err != nil {
+			return fmt.Errorf("failed to derive Solana address from 24-word seed: %w", err)
+		}
+		fmt.Printf("[solana address from 24 word seed]\n")
+		fmt.Println()
+		fmt.Println(solAddr)
+		fmt.Println()
+	}
+	if deriveTron {
+		tronAddr, err := seedify.DeriveTronAddress(mnemonic24, "")
+		if err != nil {
+			return fmt.Errorf("failed to derive Tron address from 24-word seed: %w", err)
+		}
+		fmt.Printf("[tron address from 24 word seed]\n")
+		fmt.Println()
+		fmt.Println(tronAddr)
+		fmt.Println()
+	}
 
 	return nil
 }
