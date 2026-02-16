@@ -1300,6 +1300,7 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 //nolint:govet
 type dnsRecord struct {
 	SSHEd25519 string `json:"ssh-ed25519"`
+	Nostr      string `json:"nostr"`
 	Npub       string `json:"npub"`
 	NpubKey    string `json:"npubkey"`
 	HexPub     string `json:"hexpub"`
@@ -1472,6 +1473,7 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 	// Build the DNS record struct
 	record := dnsRecord{
 		SSHEd25519: sshPubKeyBase64,
+		Nostr:      nostrKeys.Npub,
 		Npub:       nostrKeys.Npub,
 		NpubKey:    nostrKeys.Npub,
 		HexPub:     nostrKeys.PubKeyHex,
