@@ -625,7 +625,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	}
 	// 2 empty lines between outputs
 	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
+	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 
 	// 4. 24-word Brave Wallet seed phrase (wallet-prefixed, for Brave Wallet)
 	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
@@ -719,7 +719,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	fmt.Print("\n\n")
 	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
 	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD SEED PHRASE (MELT)", mnemonic24)
+	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD BRAVE-WALLET", walletMnemonic)
 	fmt.Print("\n\n")
