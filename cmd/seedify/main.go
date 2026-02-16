@@ -1474,6 +1474,7 @@ type dnsRecord struct {
 	Nostr      string `json:"nostr"`
 	Npub       string `json:"npub"`
 	NpubKey    string `json:"npubkey"`
+	PubKey     string `json:"pubkey"`
 	HexPub     string `json:"hexpub"`
 	HexPubKey  string `json:"hexpubkey"`
 	Bitcoin    string `json:"bitcoin"`
@@ -1662,6 +1663,7 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		Nostr:      nostrKeys.Npub,
 		Npub:       nostrKeys.Npub,
 		NpubKey:    nostrKeys.Npub,
+		PubKey:     nostrKeys.PubKeyHex,
 		HexPub:     nostrKeys.PubKeyHex,
 		HexPubKey:  nostrKeys.PubKeyHex,
 		Bitcoin:    btcAddr,
