@@ -772,10 +772,10 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 
 	// Bitcoin from 12 and 24 word
 	if deriveBtc {
-		if err := displayBitcoinOutput(mnemonic12, 12); err != nil {
+		if err := displayBitcoinOutput(mnemonic12, 12); err != nil { //nolint:mnd
 			return err
 		}
-		if err := displayBitcoinOutput(mnemonic24, 24); err != nil {
+		if err := displayBitcoinOutput(mnemonic24, 24); err != nil { //nolint:mnd
 			return err
 		}
 	}
@@ -1572,14 +1572,14 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 	}
 
 	// Derive Bitcoin native SegWit address (bc1q) at random index 1-19
-	btcIdx := 1 + randUint32n(19)
+	btcIdx := 1 + randUint32n(19) //nolint:mnd
 	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic, "", btcIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
 	// Derive Bitcoin Taproot address (bc1p) at random index 1-19
-	taprootIdx := 1 + randUint32n(19)
+	taprootIdx := 1 + randUint32n(19) //nolint:mnd
 	taprootAddr, err := seedify.DeriveBitcoinAddressTaprootAtIndex(mnemonic, "", taprootIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
@@ -1602,7 +1602,7 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
-	xmrIdx := randUint32n(20)
+	xmrIdx := randUint32n(20) //nolint:mnd
 	xmrAddr, err := seedify.DeriveMoneroSubaddressAtIndex(polyseedMnemonic, xmrIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Monero address: %w", err)
