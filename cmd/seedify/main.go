@@ -1306,10 +1306,6 @@ type dnsRecord struct {
 	HexPubKey  string `json:"hexpubkey"`
 	Bitcoin    string `json:"bitcoin"`
 	Taproot    string `json:"taproot"`
-	P2WSH      string `json:"p2wsh"`
-	P2WSHPath  string `json:"p2wsh-path"`
-	P2WSHXFP   string `json:"p2wsh-xfp"`
-	P2WSHXpub  string `json:"p2wsh-xpub"`
 	Litecoin   string `json:"litecoin"`
 	Dogecoin   string `json:"dogecoin"`
 	Monero     string `json:"monero"`
@@ -1403,22 +1399,6 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
 	}
 
-	// Derive P2WSH (native SegWit multisig) address and extended keys at m/48'/0'/0'/2'
-	p2wshKeys, err := seedify.DeriveBitcoinMultisigNativeSegwitKeys(mnemonic, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to derive Bitcoin P2WSH address: %w", err)
-	}
-	p2wshExtended, err := seedify.DeriveBitcoinMultisigNativeSegwitExtendedKeys(mnemonic, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to derive Bitcoin P2WSH extended keys: %w", err)
-	}
-
-	// Derive master key fingerprint (first 4 bytes of HASH160 of master pubkey)
-	masterFP, err := seedify.DeriveBitcoinMasterFingerprint(mnemonic, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to derive master key fingerprint: %w", err)
-	}
-
 	// Derive Litecoin address
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
@@ -1498,10 +1478,6 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		HexPubKey:  nostrKeys.PubKeyHex,
 		Bitcoin:    btcAddr,
 		Taproot:    taprootAddr,
-		P2WSH:      p2wshKeys.Address,
-		P2WSHPath:  "m/48'/0'/0'/2'",
-		P2WSHXFP:   masterFP,
-		P2WSHXpub:  p2wshExtended.StandardPublicKey,
 		Litecoin:   ltcAddr,
 		Dogecoin:   dogeAddr,
 		Monero:     xmrAddr,
