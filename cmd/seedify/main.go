@@ -4,7 +4,9 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1496,6 +1498,18 @@ type dnsRecord struct {
 	Ripple     string `json:"ripple"`
 }
 
+// randUint32n returns a cryptographically random uint32 in [0, n) using crypto/rand.
+func randUint32n(n uint32) uint32 {
+	if n == 0 {
+		return 0
+	}
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return binary.BigEndian.Uint32(b[:]) % n
+}
+
 // generateDNSJSON generates a DNS JSON string containing public keys and addresses
 // derived from the SSH key's 24-word seed phrase. The JSON is printed to stdout.
 //
@@ -1557,14 +1571,16 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Nostr keys: %w", err)
 	}
 
-	// Derive Bitcoin native SegWit address (bc1q)
-	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwit(mnemonic, "")
+	// Derive Bitcoin native SegWit address (bc1q) at random index 1-19
+	btcIdx := 1 + randUint32n(19)
+	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic, "", btcIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
-	// Derive Bitcoin Taproot address (bc1p)
-	taprootAddr, err := seedify.DeriveBitcoinAddressTaproot(mnemonic, "")
+	// Derive Bitcoin Taproot address (bc1p) at random index 1-19
+	taprootIdx := 1 + randUint32n(19)
+	taprootAddr, err := seedify.DeriveBitcoinAddressTaprootAtIndex(mnemonic, "", taprootIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
 	}
@@ -1581,12 +1597,13 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		return "", fmt.Errorf("failed to derive Dogecoin address: %w", err)
 	}
 
-	// Derive Monero address from 16-word polyseed
+	// Derive Monero receiving subaddress from 16-word polyseed at random index 0-19
 	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
 	if err != nil {
 		return "", fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
-	xmrAddr, err := seedify.DeriveMoneroAddress(polyseedMnemonic)
+	xmrIdx := randUint32n(20)
+	xmrAddr, err := seedify.DeriveMoneroSubaddressAtIndex(polyseedMnemonic, xmrIdx)
 	if err != nil {
 		return "", fmt.Errorf("failed to derive Monero address: %w", err)
 	}

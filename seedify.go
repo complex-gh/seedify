@@ -683,6 +683,40 @@ func DeriveBitcoinAddressNativeSegwit(mnemonic string, bip39Passphrase string) (
 	return addr.EncodeAddress(), nil
 }
 
+// DeriveBitcoinAddressNativeSegwitAtIndex derives a P2WPKH address at the given address index.
+// Path: m/84'/0'/0'/0/{addressIndex}. Index 1-19 is typically used for DNS output.
+func DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic string, bip39Passphrase string, addressIndex uint32) (string, error) {
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 84,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 0,
+		0,
+		addressIndex,
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive address key: %w", err)
+	}
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get public key: %w", err)
+	}
+	pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create address: %w", err)
+	}
+	return addr.EncodeAddress(), nil
+}
+
 // DeriveBitcoinAddressTaproot derives a P2TR (Taproot) Bitcoin address.
 // The function follows BIP86 standard with derivation path m/86'/0'/0'/0/0.
 // It returns a Bech32m address (starts with "bc1p") for Bitcoin mainnet.
@@ -758,6 +792,40 @@ func DeriveBitcoinAddressTaproot(mnemonic string, bip39Passphrase string) (strin
 		return "", fmt.Errorf("failed to create taproot address: %w", err)
 	}
 
+	return addr.EncodeAddress(), nil
+}
+
+// DeriveBitcoinAddressTaprootAtIndex derives a P2TR address at the given address index.
+// Path: m/86'/0'/0'/0/{addressIndex}. Index 1-19 is typically used for DNS output.
+func DeriveBitcoinAddressTaprootAtIndex(mnemonic string, bip39Passphrase string, addressIndex uint32) (string, error) {
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+	path := []uint32{
+		hdkeychain.HardenedKeyStart + 86,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 0,
+		0,
+		addressIndex,
+	}
+	addressKey, err := deriveBIP32Path(masterKey, path)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive address key: %w", err)
+	}
+	pubKey, err := addressKey.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get public key: %w", err)
+	}
+	taprootKey := txscript.ComputeTaprootKeyNoScript(pubKey)
+	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create taproot address: %w", err)
+	}
 	return addr.EncodeAddress(), nil
 }
 
@@ -1142,6 +1210,30 @@ func DeriveMoneroAddress(mnemonic string) (string, error) {
 	}
 
 	return string(encoded), nil
+}
+
+// DeriveMoneroSubaddressAtIndex derives a Monero receiving subaddress at the given index.
+// Index 0 maps to subaddress (0,1), index 1 to (0,2), etc. Valid range: 0-19 for DNS output.
+func DeriveMoneroSubaddressAtIndex(mnemonic string, index uint32) (string, error) {
+	seed, _, err := polyseed.Decode(mnemonic, polyseed.CoinMonero)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode polyseed mnemonic: %w", err)
+	}
+	defer seed.Free()
+	const polyseedKeySize = 32
+	spendKeyBytes := seed.Keygen(polyseed.CoinMonero, polyseedKeySize)
+	reducedKey := scReduce32(spendKeyBytes)
+	spendPrivKey, err := utils.NewPrivateKey(hex.EncodeToString(reducedKey))
+	if err != nil {
+		return "", fmt.Errorf("failed to create spend private key: %w", err)
+	}
+	keyPair, err := utils.NewFullKeyPairSpendPrivateKey(spendPrivKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create Monero key pair: %w", err)
+	}
+	viewSecKey := keyPair.ViewKeyPair().PrivateKey().Bytes()
+	spendPubKey := keyPair.SpendKeyPair().PublicKey().Bytes()
+	return deriveMoneroSubaddress(viewSecKey, spendPubKey, 0, index+1)
 }
 
 // MoneroKeys contains the primary address and subaddresses derived from a polyseed.
