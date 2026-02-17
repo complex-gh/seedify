@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/complex-gh/seedify"
 	"github.com/mattn/go-isatty"
+	nostrpkg "github.com/nbd-wtf/go-nostr"
 	"github.com/mattn/go-tty"
 	mcobra "github.com/muesli/mango-cobra"
 	"github.com/muesli/roff"
@@ -59,6 +60,7 @@ var (
 	tron           bool
 	monero         bool
 	dns            bool
+	publishRelays  string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -104,6 +106,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
+			// --publish requires --dns
+			if publishRelays != "" && !dns {
+				return errors.New("--publish requires --dns")
+			}
+
 			// Handle --brave flag: generate 25-word phrase with Brave Sync
 			// This is a special case that bypasses the unified output
 			if brave {
@@ -122,7 +129,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// Handle --dns flag: output public keys and addresses as DNS JSON
 			// This is a special case that bypasses the unified output
 			if dns {
-				dnsJSON, err := generateDNSJSON(keyPath, seedPassphrase)
+				record, nostrKeys, err := generateDNSRecord(keyPath, seedPassphrase)
 				if err != nil {
 					if strings.Contains(err.Error(), "key is not password-protected") {
 						return formatPasswordError(err)
@@ -130,7 +137,23 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					return err
 				}
 
-				fmt.Println(dnsJSON)
+				if publishRelays != "" {
+					relays := parseRelayURLs(publishRelays)
+					if len(relays) > 0 {
+						if err := publishDNSToRelays(record, nostrKeys, relays); err != nil {
+							if strings.Contains(err.Error(), "key is not password-protected") {
+								return formatPasswordError(err)
+							}
+							return err
+						}
+					}
+				}
+
+				jsonBytes, err := json.MarshalIndent(record, "", "  ")
+				if err != nil {
+					return fmt.Errorf("failed to marshal DNS JSON: %w", err)
+				}
+				fmt.Println(string(jsonBytes))
 				return nil
 			}
 
@@ -353,6 +376,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
 	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
+	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --dns: publish Kind 11111 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -1499,6 +1523,84 @@ type dnsRecord struct {
 	Ripple     string `json:"ripple"`
 }
 
+// tagsToNostrTags converts [][]string to nostrpkg.Tags ([]nostrpkg.Tag).
+func tagsToNostrTags(tags [][]string) nostrpkg.Tags {
+	out := make(nostrpkg.Tags, len(tags))
+	for i, t := range tags {
+		out[i] = nostrpkg.Tag(t)
+	}
+	return out
+}
+
+// dnsRecordToNoDNSTags converts a dnsRecord to No-DNS Kind 11111 compliant tags.
+// Each field becomes a TXT record: ["record", "TXT", "<json-key>", "", "", "<value>", "", "", "", "", "3600"].
+func dnsRecordToNoDNSTags(record dnsRecord) [][]string {
+	const ttl = "3600"
+	addTag := func(tags *[][]string, name, value string) {
+		if value != "" {
+			*tags = append(*tags, []string{"record", "TXT", name, "", "", value, "", "", "", "", ttl})
+		}
+	}
+	var tags [][]string
+	addTag(&tags, "ssh-ed25519", record.SSHEd25519)
+	addTag(&tags, "nostr", record.Nostr)
+	addTag(&tags, "npub", record.Npub)
+	addTag(&tags, "npubkey", record.NpubKey)
+	addTag(&tags, "pubkey", record.PubKey)
+	addTag(&tags, "hexpub", record.HexPub)
+	addTag(&tags, "hexpubkey", record.HexPubKey)
+	addTag(&tags, "bitcoin", record.Bitcoin)
+	addTag(&tags, "taproot", record.Taproot)
+	addTag(&tags, "litecoin", record.Litecoin)
+	addTag(&tags, "dogecoin", record.Dogecoin)
+	addTag(&tags, "monero", record.Monero)
+	addTag(&tags, "cosmos", record.Cosmos)
+	addTag(&tags, "noble", record.Noble)
+	addTag(&tags, "arbitrum", record.Arbitrum)
+	addTag(&tags, "avalanche", record.Avalanche)
+	addTag(&tags, "base", record.Base)
+	addTag(&tags, "bnbchain", record.BNBChain)
+	addTag(&tags, "cronos", record.Cronos)
+	addTag(&tags, "ethereum", record.Ethereum)
+	addTag(&tags, "optimism", record.Optimism)
+	addTag(&tags, "polygon", record.Polygon)
+	addTag(&tags, "solana", record.Solana)
+	addTag(&tags, "sui", record.Sui)
+	addTag(&tags, "tron", record.Tron)
+	addTag(&tags, "stellar", record.Stellar)
+	addTag(&tags, "ripple", record.Ripple)
+	return tags
+}
+
+// normalizeRelayURL prepends wss:// when no scheme is present; accepts wss:// and ws:// as-is.
+func normalizeRelayURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, "wss://") || strings.HasPrefix(s, "ws://") {
+		return s
+	}
+	return "wss://" + s
+}
+
+// parseRelayURLs splits a comma-separated relay string and returns normalized wss:// URLs.
+// Empty entries are skipped.
+func parseRelayURLs(relaysStr string) []string {
+	if relaysStr == "" {
+		return nil
+	}
+	parts := strings.Split(relaysStr, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		url := normalizeRelayURL(p)
+		if url != "" {
+			out = append(out, url)
+		}
+	}
+	return out
+}
+
 // randUint32n returns a cryptographically random uint32 in [0, n) using crypto/rand.
 func randUint32n(n uint32) uint32 {
 	if n == 0 {
@@ -1511,154 +1613,135 @@ func randUint32n(n uint32) uint32 {
 	return binary.BigEndian.Uint32(b[:]) % n
 }
 
-// generateDNSJSON generates a DNS JSON string containing public keys and addresses
-// derived from the SSH key's 24-word seed phrase. The JSON is printed to stdout.
+// generateDNSRecord parses the key, derives addresses, and returns the dnsRecord and Nostr keys.
 //
 //nolint:funlen
-func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
+func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seedify.NostrKeys, error) {
 	// Parse the key (same pattern as generateUnifiedOutput)
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
-		return "", fmt.Errorf("could not read key: %w", err)
+		return nil, nil, fmt.Errorf("could not read key: %w", err)
 	}
 	defer f.Close() //nolint:errcheck
 	bts, err := io.ReadAll(f)
 	if err != nil {
-		return "", fmt.Errorf("could not read key: %w", err)
+		return nil, nil, fmt.Errorf("could not read key: %w", err)
 	}
 
 	// Check if key is password-protected (required for this command)
 	isProtected, err := isKeyPasswordProtected(bts)
 	if err == nil && !isProtected {
-		return "", fmt.Errorf("key is not password-protected: keys are required to be password-protected")
+		return nil, nil, errors.New("key is not password-protected: keys are required to be password-protected")
 	}
 
 	key, err := parsePrivateKey(bts, nil)
 	if err != nil && isPasswordError(err) {
-		// Key requires a password - ask for it and parse again with the same bytes
 		pass, passErr := askKeyPassphrase(keyPath)
 		if passErr != nil {
-			return "", passErr
+			return nil, nil, passErr
 		}
 		key, err = parsePrivateKey(bts, pass)
 		if err != nil {
-			return "", fmt.Errorf("could not parse key with passphrase: %w", err)
+			return nil, nil, fmt.Errorf("could not parse key with passphrase: %w", err)
 		}
 	} else if err != nil {
-		return "", fmt.Errorf("could not parse key: %w", err)
+		return nil, nil, fmt.Errorf("could not parse key: %w", err)
 	}
 
 	ed25519Key, ok := key.(*ed25519.PrivateKey)
 	if !ok {
-		return "", fmt.Errorf("unknown key type: %v", key)
+		return nil, nil, fmt.Errorf("unknown key type: %v", key)
 	}
 
-	// Extract SSH public key as base64-encoded blob
 	sshPubKey, err := ssh.NewPublicKey(ed25519Key.Public())
 	if err != nil {
-		return "", fmt.Errorf("failed to create SSH public key: %w", err)
+		return nil, nil, fmt.Errorf("failed to create SSH public key: %w", err)
 	}
 	sshPubKeyBase64 := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
 
-	// Generate 24-word seed phrase for crypto address derivations
 	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
 	if err != nil {
-		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+		return nil, nil, fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
 
-	// Derive Nostr keys from the 24-word seed
 	nostrKeys, err := seedify.DeriveNostrKeysWithHex(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Nostr keys: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Nostr keys: %w", err)
 	}
 
-	// Derive Bitcoin native SegWit address (bc1q) at random index 1-19
 	btcIdx := 1 + randUint32n(19) //nolint:mnd
 	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic, "", btcIdx)
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
-	// Derive Bitcoin Taproot address (bc1p) at random index 1-19
 	taprootIdx := 1 + randUint32n(19) //nolint:mnd
 	taprootAddr, err := seedify.DeriveBitcoinAddressTaprootAtIndex(mnemonic, "", taprootIdx)
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
 	}
 
-	// Derive Litecoin address
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Litecoin address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Litecoin address: %w", err)
 	}
 
-	// Derive Dogecoin address
 	dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Dogecoin address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Dogecoin address: %w", err)
 	}
 
-	// Derive Monero receiving subaddress from 16-word polyseed at random index 0-19
 	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
 	if err != nil {
-		return "", fmt.Errorf("could not generate 16-word polyseed: %w", err)
+		return nil, nil, fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
 	xmrIdx := randUint32n(20) //nolint:mnd
 	xmrAddr, err := seedify.DeriveMoneroSubaddressAtIndex(polyseedMnemonic, xmrIdx)
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Monero address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Monero address: %w", err)
 	}
 
-	// Derive Cosmos address
 	cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Cosmos address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Cosmos address: %w", err)
 	}
 
-	// Derive Noble address
 	nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Noble address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Noble address: %w", err)
 	}
 
-	// Derive Ethereum address (also used for EVM-compatible chains)
 	ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Ethereum address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Ethereum address: %w", err)
 	}
 
-	// Derive Solana address
 	solAddr, err := seedify.DeriveSolanaAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Solana address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Solana address: %w", err)
 	}
 
-	// Derive Sui address
 	suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Sui address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Sui address: %w", err)
 	}
 
-	// Derive Tron address
 	tronAddr, err := seedify.DeriveTronAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Tron address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Tron address: %w", err)
 	}
 
-	// Derive Stellar address
 	xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Stellar address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Stellar address: %w", err)
 	}
 
-	// Derive Ripple address
 	xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
 	if err != nil {
-		return "", fmt.Errorf("failed to derive Ripple address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive Ripple address: %w", err)
 	}
 
-	// Build the DNS record struct
-	record := dnsRecord{
+	record := &dnsRecord{
 		SSHEd25519: sshPubKeyBase64,
 		Nostr:      nostrKeys.Npub,
 		Npub:       nostrKeys.Npub,
@@ -1687,12 +1770,52 @@ func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
 		Stellar:    xlmAddr,
 		Ripple:     xrpAddr,
 	}
+	return record, nostrKeys, nil
+}
 
-	// Marshal to indented JSON
+// generateDNSJSON generates a DNS JSON string containing public keys and addresses
+// derived from the SSH key's 24-word seed phrase. The JSON is printed to stdout.
+func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
+	record, _, err := generateDNSRecord(keyPath, seedPassphrase)
+	if err != nil {
+		return "", err
+	}
 	jsonBytes, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal DNS JSON: %w", err)
 	}
-
 	return string(jsonBytes), nil
+}
+
+// publishDNSToRelays builds a Kind 11111 No-DNS event from the dnsRecord and publishes it to the given relays.
+func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays []string) error {
+	tags := dnsRecordToNoDNSTags(*record)
+	const kindNoDNS = 11111
+	ev := nostrpkg.Event{
+		PubKey:    nostrKeys.PubKeyHex,
+		CreatedAt: nostrpkg.Now(),
+		Kind:      kindNoDNS,
+		Tags:      tagsToNostrTags(tags),
+		Content:   "",
+	}
+	if err := ev.Sign(nostrKeys.PrivKeyHex); err != nil {
+		return fmt.Errorf("failed to sign Kind 11111 event: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, url := range relays {
+		relay, err := nostrpkg.RelayConnect(ctx, url)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "seedify: failed to connect to %s: %v\n", url, err)
+			continue
+		}
+		if err := relay.Publish(ctx, ev); err != nil {
+			fmt.Fprintf(os.Stderr, "seedify: failed to publish to %s: %v\n", url, err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "seedify: published Kind 11111 to %s\n", url)
+	}
+	return nil
 }
