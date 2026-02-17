@@ -22,11 +22,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/complex-gh/seedify"
 	"github.com/mattn/go-isatty"
-	nostrpkg "github.com/nbd-wtf/go-nostr"
 	"github.com/mattn/go-tty"
 	mcobra "github.com/muesli/mango-cobra"
 	"github.com/muesli/roff"
 	"github.com/muesli/termenv"
+	nostrpkg "github.com/nbd-wtf/go-nostr"
 	"github.com/spf13/cobra"
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
@@ -1773,20 +1773,6 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	return record, nostrKeys, nil
 }
 
-// generateDNSJSON generates a DNS JSON string containing public keys and addresses
-// derived from the SSH key's 24-word seed phrase. The JSON is printed to stdout.
-func generateDNSJSON(keyPath string, seedPassphrase string) (string, error) {
-	record, _, err := generateDNSRecord(keyPath, seedPassphrase)
-	if err != nil {
-		return "", err
-	}
-	jsonBytes, err := json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal DNS JSON: %w", err)
-	}
-	return string(jsonBytes), nil
-}
-
 // publishDNSToRelays builds a Kind 11111 No-DNS event from the dnsRecord and publishes it to the given relays.
 func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays []string) error {
 	tags := dnsRecordToNoDNSTags(*record)
@@ -1802,7 +1788,7 @@ func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays 
 		return fmt.Errorf("failed to sign Kind 11111 event: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	defer cancel()
 
 	for _, url := range relays {
