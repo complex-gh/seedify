@@ -61,6 +61,7 @@ var (
 	monero         bool
 	dns            bool
 	publishRelays  string
+	dnsAppID       string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -376,7 +377,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
 	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
-	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --dns: publish Kind 11111 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --dns: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().StringVar(&dnsAppID, "dns-app-id", "app.zenprofile.networks", "When used with --dns --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -1548,16 +1550,15 @@ func tagsToNostrTags(tags [][]string) nostrpkg.Tags {
 	return out
 }
 
-// dnsRecordToNoDNSTags converts a dnsRecord to No-DNS Kind 11111 compliant tags.
-// Each field becomes a TXT record: ["record", "TXT", "<json-key>", "", "", "<value>", "", "", "", "", "3600"].
-func dnsRecordToNoDNSTags(record dnsRecord) [][]string {
-	const ttl = "3600"
+// dnsRecordToNIP78Tags converts a dnsRecord to NIP-78 Kind 30078 compliant tags.
+// Adds ["d", appID] first, then ["name", value] for each non-empty field.
+func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag := func(tags *[][]string, name, value string) {
 		if value != "" {
-			*tags = append(*tags, []string{"record", "TXT", name, "", "", value, "", "", "", "", ttl})
+			*tags = append(*tags, []string{name, value})
 		}
 	}
-	var tags [][]string
+	tags := [][]string{{"d", appID}}
 	addTag(&tags, "ssh-ed25519", record.SSHEd25519)
 	addTag(&tags, "nostr", record.Nostr)
 	addTag(&tags, "npub", record.Npub)
@@ -1789,19 +1790,23 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	return record, nostrKeys, nil
 }
 
-// publishDNSToRelays builds a Kind 11111 No-DNS event from the dnsRecord and publishes it to the given relays.
+// publishDNSToRelays builds a NIP-78 Kind 30078 event from the dnsRecord and publishes it to the given relays.
 func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays []string) error {
-	tags := dnsRecordToNoDNSTags(*record)
-	const kindNoDNS = 11111
+	appID := dnsAppID
+	if appID == "" {
+		appID = "app.zenprofile.networks"
+	}
+	tags := dnsRecordToNIP78Tags(*record, appID)
+	const kindNIP78 = 30078
 	ev := nostrpkg.Event{
 		PubKey:    nostrKeys.PubKeyHex,
 		CreatedAt: nostrpkg.Now(),
-		Kind:      kindNoDNS,
+		Kind:      kindNIP78,
 		Tags:      tagsToNostrTags(tags),
 		Content:   "",
 	}
 	if err := ev.Sign(nostrKeys.PrivKeyHex); err != nil {
-		return fmt.Errorf("failed to sign Kind 11111 event: %w", err)
+		return fmt.Errorf("failed to sign NIP-78 Kind 30078 event: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
@@ -1817,7 +1822,7 @@ func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays 
 			fmt.Fprintf(os.Stderr, "seedify: failed to publish to %s: %v\n", url, err)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "seedify: published Kind 11111 to %s\n", url)
+		fmt.Fprintf(os.Stderr, "seedify: published NIP-78 Kind 30078 to %s\n", url)
 	}
 	return nil
 }
