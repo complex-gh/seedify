@@ -1364,18 +1364,11 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 		return fmt.Errorf("failed to derive Bitcoin native SegWit keys: %w", err)
 	}
 
-	// Taproot P2TR (BIP86)
-	taprootKeys, err := seedify.DeriveBitcoinTaprootKeys(mnemonic, "")
-	if err != nil {
-		return fmt.Errorf("failed to derive Bitcoin Taproot keys: %w", err)
-	}
-
 	fmt.Printf("[bitcoin addresses from %d word seed]\n", wordCount)
 	fmt.Println()
 	fmt.Printf("%s (legacy P2PKH - BIP44 m/44'/0'/0'/0/0)\n", legacyKeys.Address)
 	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49 m/49'/0'/0'/0/0)\n", segwitKeys.Address)
 	fmt.Printf("%s (native segwit P2WPKH - BIP84 m/84'/0'/0'/0/0)\n", nativeKeys.Address)
-	fmt.Printf("%s (taproot P2TR - BIP86 m/86'/0'/0'/0/0)\n", taprootKeys.Address)
 	fmt.Println()
 
 	// === PRIVATE KEYS (WIF) ===
@@ -1385,7 +1378,6 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 	fmt.Printf("%s (legacy P2PKH - BIP44)\n", legacyKeys.PrivateWIF)
 	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", segwitKeys.PrivateWIF)
 	fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", nativeKeys.PrivateWIF)
-	fmt.Printf("%s (taproot P2TR - BIP86)\n", taprootKeys.PrivateWIF)
 	fmt.Println()
 
 	// === ACCOUNT-LEVEL EXTENDED KEYS ===
@@ -1410,18 +1402,11 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 		return fmt.Errorf("failed to derive Bitcoin native SegWit extended keys: %w", err)
 	}
 
-	// Taproot extended keys (xpub/xprv - no SLIP-132 prefix for taproot)
-	taprootExtended, err := seedify.DeriveBitcoinTaprootExtendedKeys(mnemonic, "")
-	if err != nil {
-		return fmt.Errorf("failed to derive Bitcoin Taproot extended keys: %w", err)
-	}
-
 	fmt.Printf("[bitcoin account extended public keys from %d word seed]\n", wordCount)
 	fmt.Println()
 	fmt.Printf("%s (legacy account xpub - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPublicKey)
 	fmt.Printf("%s (segwit account ypub - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPublicKey)
 	fmt.Printf("%s (native segwit account zpub - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPublicKey)
-	fmt.Printf("%s (taproot account xpub - BIP86 m/86'/0'/0')\n", taprootExtended.ExtendedPublicKey)
 	fmt.Println()
 
 	fmt.Printf("[bitcoin account extended private keys from %d word seed]\n", wordCount)
@@ -1429,7 +1414,6 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 	fmt.Printf("%s (legacy account xprv - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPrivateKey)
 	fmt.Printf("%s (segwit account yprv - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPrivateKey)
 	fmt.Printf("%s (native segwit account zprv - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPrivateKey)
-	fmt.Printf("%s (taproot account xprv - BIP86 m/86'/0'/0')\n", taprootExtended.ExtendedPrivateKey)
 	fmt.Println()
 
 	// === MULTISIG 1-OF-1 ADDRESSES AND PRIVATE KEYS ===
@@ -1520,7 +1504,6 @@ type dnsRecord struct {
 	HexPub     string `json:"hexpub"`
 	HexPubKey  string `json:"hexpubkey"`
 	Bitcoin    string `json:"bitcoin"`
-	Taproot    string `json:"taproot"`
 	Litecoin   string `json:"litecoin"`
 	Dogecoin   string `json:"dogecoin"`
 	Monero     string `json:"monero"`
@@ -1567,7 +1550,6 @@ func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag(&tags, "hexpub", record.HexPub)
 	addTag(&tags, "hexpubkey", record.HexPubKey)
 	addTag(&tags, "bitcoin", record.Bitcoin)
-	addTag(&tags, "taproot", record.Taproot)
 	addTag(&tags, "litecoin", record.Litecoin)
 	addTag(&tags, "dogecoin", record.Dogecoin)
 	addTag(&tags, "monero", record.Monero)
@@ -1692,12 +1674,6 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
-	taprootIdx := 1 + randUint32n(19) //nolint:mnd
-	taprootAddr, err := seedify.DeriveBitcoinAddressTaprootAtIndex(mnemonic, "", taprootIdx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
-	}
-
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Litecoin address: %w", err)
@@ -1767,7 +1743,6 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		HexPub:     nostrKeys.PubKeyHex,
 		HexPubKey:  nostrKeys.PubKeyHex,
 		Bitcoin:    btcAddr,
-		Taproot:    taprootAddr,
 		Litecoin:   ltcAddr,
 		Dogecoin:   dogeAddr,
 		Monero:     xmrAddr,
