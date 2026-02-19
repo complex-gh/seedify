@@ -48,19 +48,20 @@ var (
 			Background(lipgloss.AdaptiveColor{Light: completeColor("#FFEBEB", "255", "7"), Dark: completeColor("#2B1A1A", "235", "8")}).
 			Padding(1, 2) //nolint:mnd
 
-	language       string
-	wordCountStr   string
-	seedPassphrase string
-	brave          bool
-	full           bool
-	nostr          bool
-	bitcoin        bool
-	ethereum       bool
-	solana         bool
-	tron           bool
-	monero         bool
-	dns            bool
-	publishRelays  string
+	language        string
+	wordCountStr    string
+	seedPassphrase  string
+	brave           bool
+	full            bool
+	nostr           bool
+	bitcoin         bool
+	ethereum        bool
+	solana          bool
+	tron            bool
+	monero          bool
+	zenprofile      bool
+	publishRelays   string
+	zenprofileAppID string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -106,9 +107,9 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-			// --publish requires --dns
-			if publishRelays != "" && !dns {
-				return errors.New("--publish requires --dns")
+			// --publish requires --zenprofile
+			if publishRelays != "" && !zenprofile {
+				return errors.New("--publish requires --zenprofile")
 			}
 
 			// Handle --brave flag: generate 25-word phrase with Brave Sync
@@ -126,9 +127,9 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return nil
 			}
 
-			// Handle --dns flag: output public keys and addresses as DNS JSON
+			// Handle --zenprofile flag: output public keys and addresses as DNS JSON
 			// This is a special case that bypasses the unified output
-			if dns {
+			if zenprofile {
 				record, nostrKeys, err := generateDNSRecord(keyPath, seedPassphrase)
 				if err != nil {
 					if strings.Contains(err.Error(), "key is not password-protected") {
@@ -185,7 +186,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// --full: generate unified output (seed phrases + wallet derivations)
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || dns
+			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || zenprofile
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			var wordCounts []int
@@ -375,8 +376,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
-	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
-	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --dns: publish Kind 11111 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
+	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.networks", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -1362,18 +1364,11 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 		return fmt.Errorf("failed to derive Bitcoin native SegWit keys: %w", err)
 	}
 
-	// Taproot P2TR (BIP86)
-	taprootKeys, err := seedify.DeriveBitcoinTaprootKeys(mnemonic, "")
-	if err != nil {
-		return fmt.Errorf("failed to derive Bitcoin Taproot keys: %w", err)
-	}
-
 	fmt.Printf("[bitcoin addresses from %d word seed]\n", wordCount)
 	fmt.Println()
 	fmt.Printf("%s (legacy P2PKH - BIP44 m/44'/0'/0'/0/0)\n", legacyKeys.Address)
 	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49 m/49'/0'/0'/0/0)\n", segwitKeys.Address)
 	fmt.Printf("%s (native segwit P2WPKH - BIP84 m/84'/0'/0'/0/0)\n", nativeKeys.Address)
-	fmt.Printf("%s (taproot P2TR - BIP86 m/86'/0'/0'/0/0)\n", taprootKeys.Address)
 	fmt.Println()
 
 	// === PRIVATE KEYS (WIF) ===
@@ -1383,7 +1378,6 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 	fmt.Printf("%s (legacy P2PKH - BIP44)\n", legacyKeys.PrivateWIF)
 	fmt.Printf("%s (segwit P2SH-P2WPKH - BIP49)\n", segwitKeys.PrivateWIF)
 	fmt.Printf("%s (native segwit P2WPKH - BIP84)\n", nativeKeys.PrivateWIF)
-	fmt.Printf("%s (taproot P2TR - BIP86)\n", taprootKeys.PrivateWIF)
 	fmt.Println()
 
 	// === ACCOUNT-LEVEL EXTENDED KEYS ===
@@ -1408,18 +1402,11 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 		return fmt.Errorf("failed to derive Bitcoin native SegWit extended keys: %w", err)
 	}
 
-	// Taproot extended keys (xpub/xprv - no SLIP-132 prefix for taproot)
-	taprootExtended, err := seedify.DeriveBitcoinTaprootExtendedKeys(mnemonic, "")
-	if err != nil {
-		return fmt.Errorf("failed to derive Bitcoin Taproot extended keys: %w", err)
-	}
-
 	fmt.Printf("[bitcoin account extended public keys from %d word seed]\n", wordCount)
 	fmt.Println()
 	fmt.Printf("%s (legacy account xpub - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPublicKey)
 	fmt.Printf("%s (segwit account ypub - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPublicKey)
 	fmt.Printf("%s (native segwit account zpub - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPublicKey)
-	fmt.Printf("%s (taproot account xpub - BIP86 m/86'/0'/0')\n", taprootExtended.ExtendedPublicKey)
 	fmt.Println()
 
 	fmt.Printf("[bitcoin account extended private keys from %d word seed]\n", wordCount)
@@ -1427,7 +1414,6 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 	fmt.Printf("%s (legacy account xprv - BIP44 m/44'/0'/0')\n", legacyExtended.ExtendedPrivateKey)
 	fmt.Printf("%s (segwit account yprv - BIP49 m/49'/0'/0')\n", segwitExtended.ExtendedPrivateKey)
 	fmt.Printf("%s (native segwit account zprv - BIP84 m/84'/0'/0')\n", nativeExtended.ExtendedPrivateKey)
-	fmt.Printf("%s (taproot account xprv - BIP86 m/86'/0'/0')\n", taprootExtended.ExtendedPrivateKey)
 	fmt.Println()
 
 	// === MULTISIG 1-OF-1 ADDRESSES AND PRIVATE KEYS ===
@@ -1518,7 +1504,6 @@ type dnsRecord struct {
 	HexPub     string `json:"hexpub"`
 	HexPubKey  string `json:"hexpubkey"`
 	Bitcoin    string `json:"bitcoin"`
-	Taproot    string `json:"taproot"`
 	Litecoin   string `json:"litecoin"`
 	Dogecoin   string `json:"dogecoin"`
 	Monero     string `json:"monero"`
@@ -1548,16 +1533,15 @@ func tagsToNostrTags(tags [][]string) nostrpkg.Tags {
 	return out
 }
 
-// dnsRecordToNoDNSTags converts a dnsRecord to No-DNS Kind 11111 compliant tags.
-// Each field becomes a TXT record: ["record", "TXT", "<json-key>", "", "", "<value>", "", "", "", "", "3600"].
-func dnsRecordToNoDNSTags(record dnsRecord) [][]string {
-	const ttl = "3600"
+// dnsRecordToNIP78Tags converts a dnsRecord to NIP-78 Kind 30078 compliant tags.
+// Adds ["d", appID] first, then ["name", value] for each non-empty field.
+func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag := func(tags *[][]string, name, value string) {
 		if value != "" {
-			*tags = append(*tags, []string{"record", "TXT", name, "", "", value, "", "", "", "", ttl})
+			*tags = append(*tags, []string{name, value})
 		}
 	}
-	var tags [][]string
+	tags := [][]string{{"d", appID}}
 	addTag(&tags, "ssh-ed25519", record.SSHEd25519)
 	addTag(&tags, "nostr", record.Nostr)
 	addTag(&tags, "npub", record.Npub)
@@ -1566,7 +1550,6 @@ func dnsRecordToNoDNSTags(record dnsRecord) [][]string {
 	addTag(&tags, "hexpub", record.HexPub)
 	addTag(&tags, "hexpubkey", record.HexPubKey)
 	addTag(&tags, "bitcoin", record.Bitcoin)
-	addTag(&tags, "taproot", record.Taproot)
 	addTag(&tags, "litecoin", record.Litecoin)
 	addTag(&tags, "dogecoin", record.Dogecoin)
 	addTag(&tags, "monero", record.Monero)
@@ -1691,12 +1674,6 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
-	taprootIdx := 1 + randUint32n(19) //nolint:mnd
-	taprootAddr, err := seedify.DeriveBitcoinAddressTaprootAtIndex(mnemonic, "", taprootIdx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive Bitcoin Taproot address: %w", err)
-	}
-
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Litecoin address: %w", err)
@@ -1766,7 +1743,6 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		HexPub:     nostrKeys.PubKeyHex,
 		HexPubKey:  nostrKeys.PubKeyHex,
 		Bitcoin:    btcAddr,
-		Taproot:    taprootAddr,
 		Litecoin:   ltcAddr,
 		Dogecoin:   dogeAddr,
 		Monero:     xmrAddr,
@@ -1789,19 +1765,23 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	return record, nostrKeys, nil
 }
 
-// publishDNSToRelays builds a Kind 11111 No-DNS event from the dnsRecord and publishes it to the given relays.
+// publishDNSToRelays builds a NIP-78 Kind 30078 event from the dnsRecord and publishes it to the given relays.
 func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays []string) error {
-	tags := dnsRecordToNoDNSTags(*record)
-	const kindNoDNS = 11111
+	appID := zenprofileAppID
+	if appID == "" {
+		appID = "app.zenprofile.networks"
+	}
+	tags := dnsRecordToNIP78Tags(*record, appID)
+	const kindNIP78 = 30078
 	ev := nostrpkg.Event{
 		PubKey:    nostrKeys.PubKeyHex,
 		CreatedAt: nostrpkg.Now(),
-		Kind:      kindNoDNS,
+		Kind:      kindNIP78,
 		Tags:      tagsToNostrTags(tags),
 		Content:   "",
 	}
 	if err := ev.Sign(nostrKeys.PrivKeyHex); err != nil {
-		return fmt.Errorf("failed to sign Kind 11111 event: %w", err)
+		return fmt.Errorf("failed to sign NIP-78 Kind 30078 event: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
@@ -1817,7 +1797,7 @@ func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays 
 			fmt.Fprintf(os.Stderr, "seedify: failed to publish to %s: %v\n", url, err)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "seedify: published Kind 11111 to %s\n", url)
+		fmt.Fprintf(os.Stderr, "seedify: published NIP-78 Kind 30078 to %s\n", url)
 	}
 	return nil
 }
