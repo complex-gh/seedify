@@ -59,9 +59,9 @@ var (
 	solana         bool
 	tron           bool
 	monero         bool
-	dns            bool
+	zenprofile     bool
 	publishRelays  string
-	dnsAppID       string
+	zenprofileAppID string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -107,9 +107,9 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-			// --publish requires --dns
-			if publishRelays != "" && !dns {
-				return errors.New("--publish requires --dns")
+			// --publish requires --zenprofile
+			if publishRelays != "" && !zenprofile {
+				return errors.New("--publish requires --zenprofile")
 			}
 
 			// Handle --brave flag: generate 25-word phrase with Brave Sync
@@ -127,9 +127,9 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return nil
 			}
 
-			// Handle --dns flag: output public keys and addresses as DNS JSON
+			// Handle --zenprofile flag: output public keys and addresses as DNS JSON
 			// This is a special case that bypasses the unified output
-			if dns {
+			if zenprofile {
 				record, nostrKeys, err := generateDNSRecord(keyPath, seedPassphrase)
 				if err != nil {
 					if strings.Contains(err.Error(), "key is not password-protected") {
@@ -186,7 +186,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// --full: generate unified output (seed phrases + wallet derivations)
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || dns
+			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || zenprofile
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			var wordCounts []int
@@ -376,9 +376,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
-	rootCmd.PersistentFlags().BoolVar(&dns, "dns", false, "Output public keys and addresses as DNS JSON to stdout")
-	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --dns: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
-	rootCmd.PersistentFlags().StringVar(&dnsAppID, "dns-app-id", "app.zenprofile.networks", "When used with --dns --publish: NIP-78 d tag value for the event identifier")
+	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
+	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.networks", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -1792,7 +1792,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 
 // publishDNSToRelays builds a NIP-78 Kind 30078 event from the dnsRecord and publishes it to the given relays.
 func publishDNSToRelays(record *dnsRecord, nostrKeys *seedify.NostrKeys, relays []string) error {
-	appID := dnsAppID
+	appID := zenprofileAppID
 	if appID == "" {
 		appID = "app.zenprofile.networks"
 	}
