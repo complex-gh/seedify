@@ -48,19 +48,19 @@ var (
 			Background(lipgloss.AdaptiveColor{Light: completeColor("#FFEBEB", "255", "7"), Dark: completeColor("#2B1A1A", "235", "8")}).
 			Padding(1, 2) //nolint:mnd
 
-	language       string
-	wordCountStr   string
-	seedPassphrase string
-	brave          bool
-	full           bool
-	nostr          bool
-	bitcoin        bool
-	ethereum       bool
-	solana         bool
-	tron           bool
-	monero         bool
-	zenprofile     bool
-	publishRelays  string
+	language        string
+	wordCountStr    string
+	seedPassphrase  string
+	brave           bool
+	full            bool
+	nostr           bool
+	bitcoin         bool
+	ethereum        bool
+	solana          bool
+	tron            bool
+	monero          bool
+	zenprofile      bool
+	publishRelays   string
 	zenprofileAppID string
 
 	rootCmd = &cobra.Command{
