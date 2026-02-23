@@ -1466,32 +1466,33 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 //
 //nolint:govet
 type dnsRecord struct {
-	SSHEd25519 string `json:"ssh-ed25519"`
-	Nostr      string `json:"nostr"`
-	Npub       string `json:"npub"`
-	NpubKey    string `json:"npubkey"`
-	PubKey     string `json:"pubkey"`
-	HexPub     string `json:"hexpub"`
-	HexPubKey  string `json:"hexpubkey"`
-	Bitcoin    string `json:"bitcoin"`
-	Litecoin   string `json:"litecoin"`
-	Dogecoin   string `json:"dogecoin"`
-	Monero     string `json:"monero"`
-	Cosmos     string `json:"cosmos"`
-	Noble      string `json:"noble"`
-	Arbitrum   string `json:"arbitrum"`
-	Avalanche  string `json:"avalanche"`
-	Base       string `json:"base"`
-	BNBChain   string `json:"bnbchain"`
-	Cronos     string `json:"cronos"`
-	Ethereum   string `json:"ethereum"`
-	Optimism   string `json:"optimism"`
-	Polygon    string `json:"polygon"`
-	Solana     string `json:"solana"`
-	Sui        string `json:"sui"`
-	Tron       string `json:"tron"`
-	Stellar    string `json:"stellar"`
-	Ripple     string `json:"ripple"`
+	SSHEd25519    string `json:"ssh-ed25519"`
+	Nostr         string `json:"nostr"`
+	Npub          string `json:"npub"`
+	NpubKey       string `json:"npubkey"`
+	PubKey        string `json:"pubkey"`
+	HexPub        string `json:"hexpub"`
+	HexPubKey     string `json:"hexpubkey"`
+	Bitcoin       string `json:"bitcoin"`
+	SilentPayment string `json:"silentpayment"`
+	Litecoin      string `json:"litecoin"`
+	Dogecoin      string `json:"dogecoin"`
+	Monero        string `json:"monero"`
+	Cosmos        string `json:"cosmos"`
+	Noble         string `json:"noble"`
+	Arbitrum      string `json:"arbitrum"`
+	Avalanche     string `json:"avalanche"`
+	Base          string `json:"base"`
+	BNBChain      string `json:"bnbchain"`
+	Cronos        string `json:"cronos"`
+	Ethereum      string `json:"ethereum"`
+	Optimism      string `json:"optimism"`
+	Polygon       string `json:"polygon"`
+	Solana        string `json:"solana"`
+	Sui           string `json:"sui"`
+	Tron          string `json:"tron"`
+	Stellar       string `json:"stellar"`
+	Ripple        string `json:"ripple"`
 }
 
 // tagsToNostrTags converts [][]string to nostrpkg.Tags ([]nostrpkg.Tag).
@@ -1520,6 +1521,7 @@ func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag(&tags, "hexpub", record.HexPub)
 	addTag(&tags, "hexpubkey", record.HexPubKey)
 	addTag(&tags, "bitcoin", record.Bitcoin)
+	addTag(&tags, "silentpayment", record.SilentPayment)
 	addTag(&tags, "litecoin", record.Litecoin)
 	addTag(&tags, "dogecoin", record.Dogecoin)
 	addTag(&tags, "monero", record.Monero)
@@ -1644,6 +1646,11 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
 
+	sp1Addr, err := seedify.DeriveSilentPaymentAddress(mnemonic, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive Silent Payment (sp1) address: %w", err)
+	}
+
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Litecoin address: %w", err)
@@ -1705,32 +1712,33 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 
 	record := &dnsRecord{
-		SSHEd25519: sshPubKeyBase64,
-		Nostr:      nostrKeys.Npub,
-		Npub:       nostrKeys.Npub,
-		NpubKey:    nostrKeys.Npub,
-		PubKey:     nostrKeys.PubKeyHex,
-		HexPub:     nostrKeys.PubKeyHex,
-		HexPubKey:  nostrKeys.PubKeyHex,
-		Bitcoin:    btcAddr,
-		Litecoin:   ltcAddr,
-		Dogecoin:   dogeAddr,
-		Monero:     xmrAddr,
-		Cosmos:     cosmosAddr,
-		Noble:      nobleAddr,
-		Arbitrum:   ethAddr,
-		Avalanche:  ethAddr,
-		Base:       ethAddr,
-		BNBChain:   ethAddr,
-		Cronos:     ethAddr,
-		Ethereum:   ethAddr,
-		Optimism:   ethAddr,
-		Polygon:    ethAddr,
-		Solana:     solAddr,
-		Sui:        suiAddr,
-		Tron:       tronAddr,
-		Stellar:    xlmAddr,
-		Ripple:     xrpAddr,
+		SSHEd25519:    sshPubKeyBase64,
+		Nostr:         nostrKeys.Npub,
+		Npub:          nostrKeys.Npub,
+		NpubKey:       nostrKeys.Npub,
+		PubKey:        nostrKeys.PubKeyHex,
+		HexPub:        nostrKeys.PubKeyHex,
+		HexPubKey:     nostrKeys.PubKeyHex,
+		Bitcoin:       btcAddr,
+		SilentPayment: sp1Addr,
+		Litecoin:      ltcAddr,
+		Dogecoin:      dogeAddr,
+		Monero:        xmrAddr,
+		Cosmos:        cosmosAddr,
+		Noble:         nobleAddr,
+		Arbitrum:      ethAddr,
+		Avalanche:     ethAddr,
+		Base:          ethAddr,
+		BNBChain:      ethAddr,
+		Cronos:        ethAddr,
+		Ethereum:      ethAddr,
+		Optimism:      ethAddr,
+		Polygon:       ethAddr,
+		Solana:        solAddr,
+		Sui:           suiAddr,
+		Tron:          tronAddr,
+		Stellar:       xlmAddr,
+		Ripple:        xrpAddr,
 	}
 	return record, nostrKeys, nil
 }
