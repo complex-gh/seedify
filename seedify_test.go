@@ -311,6 +311,33 @@ func TestDeriveBitcoinAddressNativeSegwit_ValidFormat(t *testing.T) {
 	is.True(strings.HasPrefix(addr, "bc1q"))
 }
 
+// TestDeriveSilentPaymentAddress_ValidFormat tests that DeriveSilentPaymentAddress produces valid sp1 addresses
+func TestDeriveSilentPaymentAddress_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr, err := DeriveSilentPaymentAddress(mnemonic, "")
+	is.NoErr(err)
+
+	// BIP 352 Silent Payment address should start with "sp1"
+	is.True(strings.HasPrefix(addr, "sp1"))
+}
+
+// TestDeriveSilentPaymentAddress_Deterministic verifies that the same mnemonic always produces the same sp1 address
+func TestDeriveSilentPaymentAddress_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	addr1, err := DeriveSilentPaymentAddress(mnemonic, "")
+	is.NoErr(err)
+	addr2, err := DeriveSilentPaymentAddress(mnemonic, "")
+	is.NoErr(err)
+
+	is.Equal(addr1, addr2)
+}
+
 // TestAllBitcoinAddressTypes_Deterministic verifies that all Bitcoin address types are deterministic
 func TestAllBitcoinAddressTypes_Deterministic(t *testing.T) {
 	is := is.New(t)

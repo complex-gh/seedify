@@ -716,6 +716,97 @@ func DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic string, bip39Passphrase st
 	return addr.EncodeAddress(), nil
 }
 
+// DeriveSilentPaymentAddress derives a BIP 352 Silent Payment (sp1) address from a BIP39 mnemonic.
+// The function follows BIP 352 derivation paths:
+//   - scan key: m/352'/0'/0'/1'/0
+//   - spend key: m/352'/0'/0'/0'/0
+//
+// It returns a bech32m-encoded address (starts with "sp1") for Bitcoin mainnet.
+// Silent Payments are privacy-preserving static addresses: each payment appears on-chain
+// as a unique Taproot address, making it impossible for observers to link payments.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Bitcoin Silent Payment address (starts with "sp1")
+//   - error: Any error that occurred during derivation
+func DeriveSilentPaymentAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return "", fmt.Errorf("invalid mnemonic: %w", err)
+	}
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// BIP 352: scan_private_key at m/352'/0'/0'/1'/0
+	scanPath := []uint32{
+		hdkeychain.HardenedKeyStart + 352,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 1,
+		0,
+	}
+	scanKey, err := deriveBIP32Path(masterKey, scanPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive scan key: %w", err)
+	}
+	scanPubKey, err := scanKey.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get scan public key: %w", err)
+	}
+	scanPubBytes := scanPubKey.SerializeCompressed()
+	if len(scanPubBytes) != 33 { //nolint:mnd // secp256k1 compressed public key size
+		return "", fmt.Errorf("scan public key must be 33 bytes, got %d", len(scanPubBytes))
+	}
+
+	// BIP 352: spend_private_key at m/352'/0'/0'/0'/0
+	spendPath := []uint32{
+		hdkeychain.HardenedKeyStart + 352,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 0,
+		hdkeychain.HardenedKeyStart + 0,
+		0,
+	}
+	spendKey, err := deriveBIP32Path(masterKey, spendPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive spend key: %w", err)
+	}
+	spendPubKey, err := spendKey.ECPubKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get spend public key: %w", err)
+	}
+	spendPubBytes := spendPubKey.SerializeCompressed()
+	if len(spendPubBytes) != 33 { //nolint:mnd // secp256k1 compressed public key size
+		return "", fmt.Errorf("spend public key must be 33 bytes, got %d", len(spendPubBytes))
+	}
+
+	// BIP 352 address encoding: bech32m with "sp" prefix, version 0
+	// Data = scan_pub_key (33 bytes) || spend_pub_key (33 bytes)
+	data := make([]byte, 0, 66) //nolint:mnd
+	data = append(data, scanPubBytes...)
+	data = append(data, spendPubBytes...)
+
+	converted, err := bech32.ConvertBits(data, 8, 5, true) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to convert bits for sp1 address: %w", err)
+	}
+
+	// Prepend version byte 0 (Silent Payment v0)
+	finalData := make([]byte, 0, 1+len(converted))
+	finalData = append(finalData, 0)
+	finalData = append(finalData, converted...)
+
+	encoded, err := bech32.EncodeM("sp", finalData)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode sp1 address: %w", err)
+	}
+	return encoded, nil
+}
+
 // DeriveEthereumAddress derives an Ethereum address from a BIP39 mnemonic phrase.
 // The function follows BIP44 standard with derivation path m/44'/60'/0'/0/0.
 // It returns a checksummed Ethereum address (starts with "0x").
