@@ -654,25 +654,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 
-	// 4. 24-word wallet seed phrase (wallet-prefixed)
-	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("could not generate wallet 24-word mnemonic: %w", err)
-	}
-	// 2 empty lines between outputs
-	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD WALLET", walletMnemonic)
-
-	// 5. 24-word vault seed phrase (vault-prefixed)
-	vaultMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "vault") //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("could not generate vault 24-word mnemonic: %w", err)
-	}
-	// 2 empty lines between outputs
-	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD VAULT", vaultMnemonic)
-
-	// 6. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
+	// 4. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
 	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
@@ -740,14 +722,6 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
-	walletMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "wallet") //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("could not generate wallet 24-word mnemonic: %w", err)
-	}
-	vaultMnemonic, err := seedify.ToMnemonicWithPrefix(ed25519Key, 24, seedPassphrase, "vault") //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("could not generate vault 24-word mnemonic: %w", err)
-	}
 	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
@@ -760,10 +734,6 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
-	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD WALLET", walletMnemonic)
-	fmt.Print("\n\n")
-	printPEMPhrase("24-WORD VAULT", vaultMnemonic)
 	fmt.Print("\n\n")
 	printPEMPhrase("25-WORD BRAVE-SYNC", braveMnemonic)
 	fmt.Print("\n\n")
