@@ -159,10 +159,27 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			}
 
 			// Default: print curated seed phrases; with btc/eth/nostr/sol/tron/xmr flags,
-			// also show the relevant portions of the full output for those chains
+			// also show the relevant portions of the full output for those chains.
+			// When --words is specified, output only the requested word counts (no derivations).
 			if !full {
 				hasDerivationFlags := bitcoin || ethereum || nostr || solana || tron || monero
-				if hasDerivationFlags {
+				hasWordsFlag := wordCountStr != ""
+
+				if hasWordsFlag {
+					// --words specified: output only the requested seed phrases, no derivations
+					parsedCounts, err := parseWordCounts(wordCountStr)
+					if err != nil {
+						return fmt.Errorf("invalid word counts: %w", err)
+					}
+					err = generateUnifiedOutput(keyPath, parsedCounts, seedPassphrase,
+						false, false, false, false, false, false, false)
+					if err != nil {
+						if strings.Contains(err.Error(), "key is not password-protected") {
+							return formatPasswordError(err)
+						}
+						return err
+					}
+				} else if hasDerivationFlags {
 					err := generatePhrasesWithDerivations(keyPath, seedPassphrase,
 						nostr, bitcoin, ethereum, solana, tron, monero)
 					if err != nil {
@@ -1068,8 +1085,13 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 			}
 		}
 
-		// Derive and display Ethereum/Solana addresses for 24-word seed phrase only
+		// Derive and display Ethereum/Solana/Tron and other chain addresses for 24-word seed phrase only.
+		// Extra chains (Litecoin, Dogecoin, Cosmos, Noble, Sui, Stellar, Ripple) are only shown when
+		// the user has requested at least one crypto derivation via --btc, --eth, --sol, or --tron.
+		// This keeps --words 24 output minimal when no derivation flags are passed.
 		if count == 24 { //nolint:mnd,nestif
+			hasAnyCryptoFlag := deriveBtc || deriveEth || deriveSol || deriveTron
+
 			// Ethereum address
 			if deriveEth {
 				ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
@@ -1109,53 +1131,8 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				fmt.Println()
 			}
 
-			// Litecoin address (native SegWit)
-			ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Litecoin address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[litecoin address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(ltcAddr)
-			fmt.Println()
-
-			// Dogecoin address
-			dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Dogecoin address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[dogecoin address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(dogeAddr)
-			fmt.Println()
-
-			// Cosmos address
-			cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Cosmos address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[cosmos address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(cosmosAddr)
-			fmt.Println()
-
-			// Noble address
-			nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Noble address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[noble address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(nobleAddr)
-			fmt.Println()
-
 			// EVM-compatible chain addresses (reuse Ethereum address)
 			if deriveEth {
-				// Re-derive Ethereum address if not already available in this scope
 				evmAddr, evmErr := seedify.DeriveEthereumAddress(mnemonic, "")
 				if evmErr != nil {
 					return fmt.Errorf("failed to derive EVM address from 24-word seed: %w", evmErr)
@@ -1197,38 +1174,85 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				fmt.Println()
 			}
 
-			// Sui address
-			suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Sui address from 24-word seed: %w", err)
+			// Extra chains: only show when user requested at least one crypto derivation
+			if hasAnyCryptoFlag {
+				// Litecoin address (native SegWit)
+				ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Litecoin address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[litecoin address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(ltcAddr)
+				fmt.Println()
+
+				// Dogecoin address
+				dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Dogecoin address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[dogecoin address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(dogeAddr)
+				fmt.Println()
+
+				// Cosmos address
+				cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Cosmos address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[cosmos address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(cosmosAddr)
+				fmt.Println()
+
+				// Noble address
+				nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Noble address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[noble address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(nobleAddr)
+				fmt.Println()
+
+				// Sui address
+				suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Sui address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[sui address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(suiAddr)
+				fmt.Println()
+
+				// Stellar address
+				xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Stellar address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[stellar address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(xlmAddr)
+				fmt.Println()
+
+				// Ripple address
+				xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Ripple address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[ripple address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(xrpAddr)
+				fmt.Println()
 			}
-
-			fmt.Printf("[sui address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(suiAddr)
-			fmt.Println()
-
-			// Stellar address
-			xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Stellar address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[stellar address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(xlmAddr)
-			fmt.Println()
-
-			// Ripple address
-			xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Ripple address from 24-word seed: %w", err)
-			}
-
-			fmt.Printf("[ripple address from 24 word seed]\n")
-			fmt.Println()
-			fmt.Println(xrpAddr)
-			fmt.Println()
 		}
 
 		// Add blank line between word counts (except after the last one, unless brave is also shown)
