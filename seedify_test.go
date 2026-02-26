@@ -442,6 +442,59 @@ func TestDeriveEthereumAddress_DifferentMnemonicsProduceDifferentAddresses(t *te
 	is.True(addr1 != addr2)
 }
 
+// TestDeriveZcashAddress_ValidFormat tests that DeriveZcashAddress produces valid t1 addresses
+func TestDeriveZcashAddress_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr, err := DeriveZcashAddress(mnemonic, "")
+	is.NoErr(err)
+
+	// Zcash transparent P2PKH addresses start with "t1"
+	is.True(strings.HasPrefix(addr, "t1"))
+
+	// Address should have reasonable length (Base58Check: 2-byte version + 20-byte hash + 4-byte checksum)
+	is.True(len(addr) >= 34)
+	is.True(len(addr) <= 36)
+}
+
+// TestDeriveZcashAddress_Deterministic verifies that the same mnemonic always produces the same Zcash address
+func TestDeriveZcashAddress_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	addr1, err := DeriveZcashAddress(mnemonic, "")
+	is.NoErr(err)
+
+	addr2, err := DeriveZcashAddress(mnemonic, "")
+	is.NoErr(err)
+
+	addr3, err := DeriveZcashAddress(mnemonic, "")
+	is.NoErr(err)
+
+	is.Equal(addr1, addr2)
+	is.Equal(addr2, addr3)
+}
+
+// TestDeriveZcashAddress_DifferentMnemonicsProduceDifferentAddresses verifies that different mnemonics
+// produce different Zcash addresses
+func TestDeriveZcashAddress_DifferentMnemonicsProduceDifferentAddresses(t *testing.T) {
+	is := is.New(t)
+
+	mnemonic1 := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+	mnemonic2 := "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote"
+
+	addr1, err := DeriveZcashAddress(mnemonic1, "")
+	is.NoErr(err)
+
+	addr2, err := DeriveZcashAddress(mnemonic2, "")
+	is.NoErr(err)
+
+	is.True(addr1 != addr2)
+}
+
 // TestDeriveSolanaAddress_ValidFormat tests that DeriveSolanaAddress produces valid SOL addresses
 func TestDeriveSolanaAddress_ValidFormat(t *testing.T) {
 	is := is.New(t)

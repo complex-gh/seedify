@@ -50,6 +50,10 @@ const (
 	bip39MaxWordCount = 24
 	// msPerSecond is the number of milliseconds in one second.
 	msPerSecond = 1000
+	// bip32ChainCodeSize is the size in bytes of a BIP32 chain code.
+	bip32ChainCodeSize = 32
+	// compressedPubKeySize is the size in bytes of a compressed secp256k1 public key (1 prefix + 32 x).
+	compressedPubKeySize = 33
 )
 
 // entropySizeMap maps word count to entropy size in bytes for BIP39.
@@ -1317,6 +1321,15 @@ type BitcoinExtendedKeys struct {
 	ExtendedPrivateKey string
 }
 
+// PayNymKeys contains the BIP47 payment code (PayNym) and notification address.
+// The payment code is derived from m/47'/0'/0'; the notification address from m/47'/0'/0'/0.
+type PayNymKeys struct {
+	// PaymentCode is the Base58Check-encoded BIP47 payment code (starts with "PM8T").
+	PaymentCode string
+	// NotificationAddress is the P2PKH address for receiving notification transactions.
+	NotificationAddress string
+}
+
 // BitcoinMultisigExtendedKeys contains both the specific format (Ypub/Yprv or Zpub/Zprv)
 // and the standard format (xpub/xprv) for multisig extended keys.
 // The standard keys are nested conceptually below the specific keys.
@@ -1344,6 +1357,108 @@ func deriveBIP32Path(masterKey *hdkeychain.ExtendedKey, path []uint32) (*hdkeych
 		}
 	}
 	return key, nil
+}
+
+// payNymBase58Version is the version byte for BIP47 payment code Base58Check encoding.
+// 0x47 produces "P" as the first character of the serialized form.
+const payNymBase58Version = 0x47
+
+// DerivePayNym derives a BIP47 payment code (PayNym) and notification address from a BIP39 mnemonic.
+// The function follows BIP47 with derivation path m/47'/0'/0' for the payment code and
+// m/47'/0'/0'/0 for the notification address. Uses version 1 payment code format.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - PayNymKeys: The payment code and notification address
+//   - error: Any error that occurred during derivation
+func DerivePayNym(mnemonic string, bip39Passphrase string) (*PayNymKeys, error) {
+	seed, err := bip39.NewSeedWithErrorChecking(mnemonic, bip39Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create master key: %w", err)
+	}
+
+	// Derive BIP47 identity key: m/47'/0'/0'
+	identityPath := []uint32{
+		hdkeychain.HardenedKeyStart + 47, // purpose (BIP47)
+		hdkeychain.HardenedKeyStart + 0,  // coin type (Bitcoin)
+		hdkeychain.HardenedKeyStart + 0,  // identity (account)
+	}
+	identityKey, err := deriveBIP32Path(masterKey, identityPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive BIP47 identity key: %w", err)
+	}
+
+	// Derive notification key: m/47'/0'/0'/0 (0th non-hardened child)
+	notificationKey, err := identityKey.Derive(0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive notification key: %w", err)
+	}
+
+	// Build payment code: neuter identity key for public derivation
+	identityPubKey, err := identityKey.Neuter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to neuter identity key: %w", err)
+	}
+
+	pubKey, err := identityPubKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+	chainCode := identityPubKey.ChainCode()
+	if len(chainCode) != bip32ChainCodeSize {
+		return nil, fmt.Errorf("invalid chain code length: %d", len(chainCode))
+	}
+
+	// BIP47 Version 1 payment code binary format (80 bytes):
+	// Byte 0: version (0x01)
+	// Byte 1: features (0x00)
+	// Byte 2: sign (0x02 or 0x03 for compressed pubkey)
+	// Bytes 3-34: x value (32 bytes)
+	// Bytes 35-66: chain code (32 bytes)
+	// Bytes 67-79: reserved for future expansion, zero-filled
+	pubKeyBytes := pubKey.SerializeCompressed()
+	if len(pubKeyBytes) != compressedPubKeySize {
+		return nil, fmt.Errorf("invalid public key length: %d", len(pubKeyBytes))
+	}
+	signByte := pubKeyBytes[0]
+	if signByte != 0x02 && signByte != 0x03 {
+		return nil, fmt.Errorf("invalid compressed pubkey prefix: 0x%02x", signByte)
+	}
+	xValue := pubKeyBytes[1:33]
+
+	payload := make([]byte, 80) //nolint:mnd
+	payload[0] = 0x01           // version 1
+	payload[1] = 0x00           // features
+	payload[2] = signByte
+	copy(payload[3:35], xValue)
+	copy(payload[35:67], chainCode)
+	// bytes 67-79 remain zero
+
+	paymentCode := encodeBase58Check(payNymBase58Version, payload)
+
+	// Create notification address (P2PKH) from the notification key
+	notifPubKey, err := notificationKey.ECPubKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get notification public key: %w", err)
+	}
+	pubKeyHash := btcutil.Hash160(notifPubKey.SerializeCompressed())
+	addr, err := btcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create notification address: %w", err)
+	}
+
+	return &PayNymKeys{
+		PaymentCode:         paymentCode,
+		NotificationAddress: addr.EncodeAddress(),
+	}, nil
 }
 
 // DeriveBitcoinLegacyKeys derives a Bitcoin Legacy P2PKH address and its WIF private key.
@@ -2286,6 +2401,21 @@ func encodeBase58Check(version byte, payload []byte) string {
 	return base58.Encode(data)
 }
 
+// encodeBase58CheckVersionBytes encodes data with a multi-byte version prefix using Base58Check.
+// Zcash transparent (t1) addresses use a 2-byte version. Same checksum scheme as encodeBase58Check.
+func encodeBase58CheckVersionBytes(version []byte, payload []byte) string {
+	data := make([]byte, 0, len(version)+len(payload)+4) //nolint:mnd
+	data = append(data, version...)
+	data = append(data, payload...)
+
+	firstHash := sha256.Sum256(data)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+	data = append(data, checksum...)
+
+	return base58.Encode(data)
+}
+
 // encodeBech32Address encodes a witness program as a bech32 address with the given
 // human-readable part (HRP) and witness version.
 func encodeBech32Address(hrp string, witnessVersion byte, witnessProgram []byte) (string, error) {
@@ -2356,6 +2486,36 @@ func DeriveDogecoinAddress(mnemonic string, bip39Passphrase string) (string, err
 
 	// Encode as Base58Check with version byte 0x1E (Dogecoin mainnet P2PKH, produces "D...")
 	return encodeBase58Check(0x1E, pubKeyHash), nil //nolint:mnd
+}
+
+// zcashMainnetP2PKHVersion is the 2-byte Base58Check version for Zcash mainnet transparent P2PKH (t1).
+// Per Zcash chainparams: base58Prefixes[PUBKEY_ADDRESS] = {0x1C, 0xB8}.
+const (
+	zcashP2PKHVersionByte0 = 0x1C
+	zcashP2PKHVersionByte1 = 0xB8
+)
+
+// DeriveZcashAddress derives a Zcash transparent P2PKH (t1) address from a BIP39 mnemonic.
+// The function follows BIP44 standard with derivation path m/44'/133'/0'/0/0 (coin type 133 = Zcash per SLIP-0044).
+// It returns a Base58Check address (starts with "t1") for Zcash mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Zcash transparent P2PKH address (starts with "t1")
+//   - error: Any error that occurred during derivation
+func DeriveZcashAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Derive at m/44'/133'/0'/0/0 (coin type 133 = Zcash)
+	pubKeyHash, err := deriveBIP44Address(mnemonic, bip39Passphrase, 133) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Zcash key: %w", err)
+	}
+
+	// Encode as Base58Check with 2-byte version (Zcash mainnet P2PKH, produces "t1...")
+	version := []byte{zcashP2PKHVersionByte0, zcashP2PKHVersionByte1}
+	return encodeBase58CheckVersionBytes(version, pubKeyHash), nil
 }
 
 // rippleAlphabet is the custom Base58 alphabet used by the XRP Ledger.
