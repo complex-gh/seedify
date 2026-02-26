@@ -50,6 +50,10 @@ const (
 	bip39MaxWordCount = 24
 	// msPerSecond is the number of milliseconds in one second.
 	msPerSecond = 1000
+	// bip32ChainCodeSize is the size in bytes of a BIP32 chain code.
+	bip32ChainCodeSize = 32
+	// compressedPubKeySize is the size in bytes of a compressed secp256k1 public key (1 prefix + 32 x).
+	compressedPubKeySize = 33
 )
 
 // entropySizeMap maps word count to entropy size in bytes for BIP39.
@@ -1409,7 +1413,7 @@ func DerivePayNym(mnemonic string, bip39Passphrase string) (*PayNymKeys, error) 
 		return nil, fmt.Errorf("failed to get public key: %w", err)
 	}
 	chainCode := identityPubKey.ChainCode()
-	if len(chainCode) != 32 {
+	if len(chainCode) != bip32ChainCodeSize {
 		return nil, fmt.Errorf("invalid chain code length: %d", len(chainCode))
 	}
 
@@ -1421,7 +1425,7 @@ func DerivePayNym(mnemonic string, bip39Passphrase string) (*PayNymKeys, error) 
 	// Bytes 35-66: chain code (32 bytes)
 	// Bytes 67-79: reserved for future expansion, zero-filled
 	pubKeyBytes := pubKey.SerializeCompressed()
-	if len(pubKeyBytes) != 33 {
+	if len(pubKeyBytes) != compressedPubKeySize {
 		return nil, fmt.Errorf("invalid public key length: %d", len(pubKeyBytes))
 	}
 	signByte := pubKeyBytes[0]
