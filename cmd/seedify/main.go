@@ -56,6 +56,7 @@ var (
 	nostr           bool
 	bitcoin         bool
 	ethereum        bool
+	zcash           bool
 	solana          bool
 	tron            bool
 	monero          bool
@@ -162,7 +163,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// also show the relevant portions of the full output for those chains.
 			// When --words is specified, output only the requested word counts (no derivations).
 			if !full {
-				hasDerivationFlags := bitcoin || ethereum || nostr || solana || tron || monero
+				hasDerivationFlags := bitcoin || ethereum || zcash || nostr || solana || tron || monero
 				hasWordsFlag := wordCountStr != ""
 
 				if hasWordsFlag {
@@ -172,7 +173,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 						return fmt.Errorf("invalid word counts: %w", err)
 					}
 					err = generateUnifiedOutput(keyPath, parsedCounts, seedPassphrase,
-						false, false, false, false, false, false, false)
+						false, false, false, false, false, false, false, false)
 					if err != nil {
 						if strings.Contains(err.Error(), "key is not password-protected") {
 							return formatPasswordError(err)
@@ -181,7 +182,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					}
 				} else if hasDerivationFlags {
 					err := generatePhrasesWithDerivations(keyPath, seedPassphrase,
-						nostr, bitcoin, ethereum, solana, tron, monero)
+						nostr, bitcoin, ethereum, zcash, solana, tron, monero)
 					if err != nil {
 						if strings.Contains(err.Error(), "key is not password-protected") {
 							return formatPasswordError(err)
@@ -203,13 +204,13 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// --full: generate unified output (seed phrases + wallet derivations)
 			hasWordsFlag := wordCountStr != ""
 			hasNostrFlag := nostr
-			hasCryptoFlags := bitcoin || ethereum || solana || tron || monero || zenprofile
+			hasCryptoFlags := bitcoin || ethereum || zcash || solana || tron || monero || zenprofile
 			hasAnyDerivationFlags := hasWordsFlag || hasNostrFlag || hasCryptoFlags
 
 			var wordCounts []int
 			var deriveNostr bool
 			var showBrave bool
-			var deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool
+			var deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr bool
 
 			if !hasAnyDerivationFlags {
 				wordCounts = []int{12, 15, 16, 18, 21, 24}
@@ -217,6 +218,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				showBrave = true
 				deriveBtc = true
 				deriveEth = true
+				deriveZec = true
 				deriveSol = true
 				deriveTron = true
 				deriveXmr = true
@@ -235,7 +237,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 					if monero {
 						wordCounts = append(wordCounts, 16) //nolint:mnd
 					}
-					if bitcoin || ethereum || solana || tron {
+					if bitcoin || ethereum || zcash || solana || tron {
 						wordCounts = append(wordCounts, 24) //nolint:mnd
 					}
 				}
@@ -243,12 +245,13 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				showBrave = false
 				deriveBtc = bitcoin
 				deriveEth = ethereum
+				deriveZec = zcash
 				deriveSol = solana
 				deriveTron = tron
 				deriveXmr = monero
 			}
 
-			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr)
+			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
@@ -390,11 +393,12 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&nostr, "nostr", false, "Derive Nostr keys (npub/nsec) from seed phrase.")
 	rootCmd.PersistentFlags().BoolVar(&bitcoin, "btc", false, "Derive Bitcoin address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&ethereum, "eth", false, "Derive Ethereum address from 24-word seed phrase")
+	rootCmd.PersistentFlags().BoolVar(&zcash, "zec", false, "Derive Zcash address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&solana, "sol", false, "Derive Solana address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&tron, "tron", false, "Derive Tron address from 24-word seed phrase")
 	rootCmd.PersistentFlags().BoolVar(&monero, "xmr", false, "Derive Monero address from 16-word polyseed")
 	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
-	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay-primal.net,relay.damus.io)")
+	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.contactme", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
@@ -687,11 +691,11 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 }
 
 // generatePhrasesWithDerivations outputs the curated seed phrases followed by
-// only the derivations requested by the flags (nostr, btc, eth, sol, tron, xmr).
+// only the derivations requested by the flags (nostr, btc, eth, zec, sol, tron, xmr).
 // Each flag shows the relevant portions of the full output for that chain.
 //
 //nolint:funlen
-func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriveNostr, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool) error {
+func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriveNostr, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr bool) error {
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
 		return fmt.Errorf("could not read key: %w", err)
@@ -756,7 +760,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	fmt.Print("\n\n")
 
 	// Output requested derivations only
-	hasDerivations := deriveNostr || deriveBtc || deriveEth || deriveSol || deriveTron || deriveXmr
+	hasDerivations := deriveNostr || deriveBtc || deriveEth || deriveZec || deriveSol || deriveTron || deriveXmr
 	if !hasDerivations {
 		return nil
 	}
@@ -819,12 +823,23 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 		fmt.Println()
 		fmt.Println(ethAddr)
 		fmt.Println()
+
 		for _, name := range []string{"arbitrum", "avalanche", "base", "bnbchain", "cronos", "optimism", "polygon"} {
 			fmt.Printf("[%s address from 24 word seed]\n", name)
 			fmt.Println()
 			fmt.Println(ethAddr)
 			fmt.Println()
 		}
+	}
+	if deriveZec {
+		zcashAddr, err := seedify.DeriveZcashAddress(mnemonic24, "")
+		if err != nil {
+			return fmt.Errorf("failed to derive Zcash address from 24-word seed: %w", err)
+		}
+		fmt.Printf("[zcash address from 24 word seed]\n")
+		fmt.Println()
+		fmt.Println(zcashAddr)
+		fmt.Println()
 	}
 	if deriveSol {
 		solAddr, err := seedify.DeriveSolanaAddress(mnemonic24, "")
@@ -989,7 +1004,7 @@ func readPassword(msg string) ([]byte, error) {
 // When deriveNostr is true, it derives Nostr keys directly from the SSH key (not from seed phrases).
 // When showBrave is true, it also displays the brave 24-word seed phrase at the end.
 // Crypto address flags (deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr) control which addresses to derive.
-func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool, deriveBtc, deriveEth, deriveSol, deriveTron, deriveXmr bool) error {
+func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase string, deriveNostr bool, showBrave bool, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr bool) error {
 	// Parse the key once
 	f, err := openFileOrStdin(keyPath)
 	if err != nil {
@@ -1090,7 +1105,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		// the user has requested at least one crypto derivation via --btc, --eth, --sol, or --tron.
 		// This keeps --words 24 output minimal when no derivation flags are passed.
 		if count == 24 { //nolint:mnd,nestif
-			hasAnyCryptoFlag := deriveBtc || deriveEth || deriveSol || deriveTron
+			hasAnyCryptoFlag := deriveBtc || deriveEth || deriveZec || deriveSol || deriveTron
 
 			// Ethereum address
 			if deriveEth {
@@ -1102,6 +1117,19 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				fmt.Printf("[ethereum address from 24 word seed]\n")
 				fmt.Println()
 				fmt.Println(ethAddr)
+				fmt.Println()
+			}
+
+			// Zcash address (below Ethereum, shown when any crypto derivation is requested)
+			if hasAnyCryptoFlag {
+				zcashAddr, err := seedify.DeriveZcashAddress(mnemonic, "")
+				if err != nil {
+					return fmt.Errorf("failed to derive Zcash address from 24-word seed: %w", err)
+				}
+
+				fmt.Printf("[zcash address from 24 word seed]\n")
+				fmt.Println()
+				fmt.Println(zcashAddr)
 				fmt.Println()
 			}
 
@@ -1510,6 +1538,7 @@ type dnsRecord struct {
 	BNBChain      string `json:"bnbchain"`
 	Cronos        string `json:"cronos"`
 	Ethereum      string `json:"ethereum"`
+	Zcash         string `json:"zcash"`
 	Optimism      string `json:"optimism"`
 	Polygon       string `json:"polygon"`
 	Solana        string `json:"solana"`
@@ -1557,6 +1586,7 @@ func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag(&tags, "bnbchain", record.BNBChain)
 	addTag(&tags, "cronos", record.Cronos)
 	addTag(&tags, "ethereum", record.Ethereum)
+	addTag(&tags, "zcash", record.Zcash)
 	addTag(&tags, "optimism", record.Optimism)
 	addTag(&tags, "polygon", record.Polygon)
 	addTag(&tags, "solana", record.Solana)
@@ -1710,6 +1740,11 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Ethereum address: %w", err)
 	}
 
+	zcashAddr, err := seedify.DeriveZcashAddress(mnemonic, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive Zcash address: %w", err)
+	}
+
 	solAddr, err := seedify.DeriveSolanaAddress(mnemonic, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Solana address: %w", err)
@@ -1756,6 +1791,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		BNBChain:      ethAddr,
 		Cronos:        ethAddr,
 		Ethereum:      ethAddr,
+		Zcash:         zcashAddr,
 		Optimism:      ethAddr,
 		Polygon:       ethAddr,
 		Solana:        solAddr,

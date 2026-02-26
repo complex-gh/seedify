@@ -2286,6 +2286,21 @@ func encodeBase58Check(version byte, payload []byte) string {
 	return base58.Encode(data)
 }
 
+// encodeBase58CheckVersionBytes encodes data with a multi-byte version prefix using Base58Check.
+// Zcash transparent (t1) addresses use a 2-byte version. Same checksum scheme as encodeBase58Check.
+func encodeBase58CheckVersionBytes(version []byte, payload []byte) string {
+	data := make([]byte, 0, len(version)+len(payload)+4) //nolint:mnd
+	data = append(data, version...)
+	data = append(data, payload...)
+
+	firstHash := sha256.Sum256(data)
+	secondHash := sha256.Sum256(firstHash[:])
+	checksum := secondHash[:4]
+	data = append(data, checksum...)
+
+	return base58.Encode(data)
+}
+
 // encodeBech32Address encodes a witness program as a bech32 address with the given
 // human-readable part (HRP) and witness version.
 func encodeBech32Address(hrp string, witnessVersion byte, witnessProgram []byte) (string, error) {
@@ -2356,6 +2371,36 @@ func DeriveDogecoinAddress(mnemonic string, bip39Passphrase string) (string, err
 
 	// Encode as Base58Check with version byte 0x1E (Dogecoin mainnet P2PKH, produces "D...")
 	return encodeBase58Check(0x1E, pubKeyHash), nil //nolint:mnd
+}
+
+// zcashMainnetP2PKHVersion is the 2-byte Base58Check version for Zcash mainnet transparent P2PKH (t1).
+// Per Zcash chainparams: base58Prefixes[PUBKEY_ADDRESS] = {0x1C, 0xB8}.
+const (
+	zcashP2PKHVersionByte0 = 0x1C
+	zcashP2PKHVersionByte1 = 0xB8
+)
+
+// DeriveZcashAddress derives a Zcash transparent P2PKH (t1) address from a BIP39 mnemonic.
+// The function follows BIP44 standard with derivation path m/44'/133'/0'/0/0 (coin type 133 = Zcash per SLIP-0044).
+// It returns a Base58Check address (starts with "t1") for Zcash mainnet.
+//
+// Parameters:
+//   - mnemonic: A valid BIP39 mnemonic phrase
+//   - bip39Passphrase: Optional BIP39 passphrase (empty string if not used)
+//
+// Returns:
+//   - address: The Zcash transparent P2PKH address (starts with "t1")
+//   - error: Any error that occurred during derivation
+func DeriveZcashAddress(mnemonic string, bip39Passphrase string) (string, error) {
+	// Derive at m/44'/133'/0'/0/0 (coin type 133 = Zcash)
+	pubKeyHash, err := deriveBIP44Address(mnemonic, bip39Passphrase, 133) //nolint:mnd
+	if err != nil {
+		return "", fmt.Errorf("failed to derive Zcash key: %w", err)
+	}
+
+	// Encode as Base58Check with 2-byte version (Zcash mainnet P2PKH, produces "t1...")
+	version := []byte{zcashP2PKHVersionByte0, zcashP2PKHVersionByte1}
+	return encodeBase58CheckVersionBytes(version, pubKeyHash), nil
 }
 
 // rippleAlphabet is the custom Base58 alphabet used by the XRP Ledger.
