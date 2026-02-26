@@ -1458,6 +1458,18 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 		return fmt.Errorf("failed to derive Bitcoin multisig native SegWit keys: %w", err)
 	}
 
+	// === PAYNYM (BIP47) ===
+	payNymKeys, err := seedify.DerivePayNym(mnemonic, "")
+	if err != nil {
+		return fmt.Errorf("failed to derive PayNym: %w", err)
+	}
+
+	fmt.Printf("[bitcoin PayNym (BIP47) from %d word seed]\n", wordCount)
+	fmt.Println()
+	fmt.Printf("%s (payment code - BIP47 m/47'/0'/0')\n", payNymKeys.PaymentCode)
+	fmt.Printf("%s (notification address - m/47'/0'/0'/0)\n", payNymKeys.NotificationAddress)
+	fmt.Println()
+
 	fmt.Printf("[bitcoin multisig 1-of-1 addresses from %d word seed]\n", wordCount)
 	fmt.Println()
 	fmt.Printf("%s (legacy P2SH - BIP48 m/48'/0'/0'/0'/0/0)\n", multisigLegacyKeys.Address)
@@ -1527,6 +1539,7 @@ type dnsRecord struct {
 	HexPubKey     string `json:"hexpubkey"`
 	Bitcoin       string `json:"bitcoin"`
 	SilentPayment string `json:"silentpayment"`
+	PayNym        string `json:"paynym"`
 	Litecoin      string `json:"litecoin"`
 	Dogecoin      string `json:"dogecoin"`
 	Monero        string `json:"monero"`
@@ -1575,6 +1588,7 @@ func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	addTag(&tags, "hexpubkey", record.HexPubKey)
 	addTag(&tags, "bitcoin", record.Bitcoin)
 	addTag(&tags, "silentpayment", record.SilentPayment)
+	addTag(&tags, "paynym", record.PayNym)
 	addTag(&tags, "litecoin", record.Litecoin)
 	addTag(&tags, "dogecoin", record.Dogecoin)
 	addTag(&tags, "monero", record.Monero)
@@ -1705,6 +1719,11 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Silent Payment (sp1) address: %w", err)
 	}
 
+	payNymKeys, err := seedify.DerivePayNym(mnemonic, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive PayNym: %w", err)
+	}
+
 	ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Litecoin address: %w", err)
@@ -1780,6 +1799,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		HexPubKey:     nostrKeys.PubKeyHex,
 		Bitcoin:       btcAddr,
 		SilentPayment: sp1Addr,
+		PayNym:        payNymKeys.PaymentCode,
 		Litecoin:      ltcAddr,
 		Dogecoin:      dogeAddr,
 		Monero:        xmrAddr,
