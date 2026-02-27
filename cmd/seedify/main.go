@@ -4,9 +4,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1640,18 +1638,6 @@ func parseRelayURLs(relaysStr string) []string {
 	return out
 }
 
-// randUint32n returns a cryptographically random uint32 in [0, n) using crypto/rand.
-func randUint32n(n uint32) uint32 {
-	if n == 0 {
-		return 0
-	}
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0
-	}
-	return binary.BigEndian.Uint32(b[:]) % n
-}
-
 // generateDNSRecord parses the key, derives addresses, and returns the dnsRecord and Nostr keys.
 //
 //nolint:funlen
@@ -1708,8 +1694,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Nostr keys: %w", err)
 	}
 
-	btcIdx := 1 + randUint32n(19) //nolint:mnd
-	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic, "", btcIdx)
+	btcAddr, err := seedify.DeriveBitcoinAddressNativeSegwitAtIndex(mnemonic, "", 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Bitcoin native SegWit address: %w", err)
 	}
@@ -1738,8 +1723,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
-	xmrIdx := randUint32n(20) //nolint:mnd
-	xmrAddr, err := seedify.DeriveMoneroSubaddressAtIndex(polyseedMnemonic, xmrIdx)
+	xmrAddr, err := seedify.DeriveMoneroAddress(polyseedMnemonic)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to derive Monero address: %w", err)
 	}
