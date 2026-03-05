@@ -46,23 +46,22 @@ var (
 			Background(lipgloss.AdaptiveColor{Light: completeColor("#FFEBEB", "255", "7"), Dark: completeColor("#2B1A1A", "235", "8")}).
 			Padding(1, 2) //nolint:mnd
 
-	language         string
-	wordCountStr     string
-	seedPassphrase   string
-	brave            bool
-	full             bool
-	nostr            bool
-	bitcoin          bool
-	ethereum         bool
-	zcash            bool
-	solana           bool
-	tron             bool
-	monero           bool
-	zenprofile       bool
-	publishRelays    string
-	zenprofileAppID  string
-	birthday         uint64
-	polyseedBirthday string
+	language        string
+	wordCountStr    string
+	seedPassphrase  string
+	brave           bool
+	full            bool
+	nostr           bool
+	bitcoin         bool
+	ethereum        bool
+	zcash           bool
+	solana          bool
+	tron            bool
+	monero          bool
+	zenprofile      bool
+	publishRelays   string
+	zenprofileAppID string
+	polyseedYear    string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -72,6 +71,10 @@ var (
 Valid word counts are: 12, 15, 16, 18, 21, or 24.
 - 12, 15, 18, 21, 24 words use BIP39 format
 - 16 words use Polyseed format
+
+By default, two 16-word Polyseed phrases are shown: one for last year
+and one for the current year (using January 1 as the birthday). Use
+--polyseed-year to override with a single specific year.
 
 SECURITY TIP: Add a space before the command to prevent it from being
 saved in your shell history. For example:
@@ -88,6 +91,8 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --words 12 --seed-passphrase "my-passphrase"
   seedify ~/.ssh/id_ed25519 --brave
   seedify ~/.ssh/id_ed25519 --full
+  seedify ~/.ssh/id_ed25519 --polyseed-year 2024
+  seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
   cat ~/.ssh/id_ed25519 | seedify --words 18`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -102,12 +107,6 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			if err := setLanguage(language); err != nil {
 				return err
 			}
-
-			parsedBirthday, err := parsePolyseedBirthday(polyseedBirthday)
-			if err != nil {
-				return fmt.Errorf("invalid --polyseed-birthday value %q: %w", polyseedBirthday, err)
-			}
-			birthday = parsedBirthday
 
 			var keyPath string
 			if len(args) > 0 {
@@ -257,11 +256,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				deriveXmr = monero
 			}
 
-			err = generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr)
-			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
-				return formatPasswordError(err)
+			uErr := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr)
+			if uErr != nil && strings.Contains(uErr.Error(), "key is not password-protected") {
+				return formatPasswordError(uErr)
 			}
-			return err
+			return uErr
 		},
 	}
 
@@ -406,31 +405,34 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
 	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.contactme", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
-	rootCmd.PersistentFlags().StringVar(&polyseedBirthday, "polyseed-birthday", "2026-01", `Polyseed birthday date (YYYY-MM or YYYY-MM-DD, or "now" for current time)`)
-
+	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: show both last year and current year")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
 }
 
-// parsePolyseedBirthday parses a human-friendly date string into a Unix timestamp.
-// Accepted formats: "YYYY-MM", "YYYY-MM-DD", or "now" (for current time, which
-// maps to 0 in the polyseed library).
-func parsePolyseedBirthday(s string) (uint64, error) {
-	if s == "now" {
-		return 0, nil
+// getPolyseedYears returns the list of years to generate polyseeds for, based
+// on the --polyseed-year flag. If the flag is empty, returns [lastYear, currentYear].
+// If set, returns a single-element slice with the parsed year.
+func getPolyseedYears() ([]int, error) {
+	if polyseedYear == "" {
+		now := time.Now().Year()
+		return []int{now - 1, now}, nil
 	}
 
-	// Try YYYY-MM-DD first, then YYYY-MM
-	for _, layout := range []string{"2006-01-02", "2006-01"} {
-		t, err := time.Parse(layout, s)
-		if err == nil {
-			return uint64(t.Unix()), nil //nolint:gosec
-		}
+	year, err := strconv.Atoi(polyseedYear)
+	if err != nil {
+		return nil, fmt.Errorf("expected a four-digit year (e.g. 2026), got %q", polyseedYear)
 	}
 
-	return 0, fmt.Errorf("expected YYYY-MM, YYYY-MM-DD, or \"now\"")
+	return []int{year}, nil
+}
+
+// birthdayFromYear returns the Unix timestamp for January 1 00:00 UTC of the
+// given year, suitable for use as a polyseed birthday.
+func birthdayFromYear(year int) uint64 {
+	return uint64(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()) //nolint:gosec
 }
 
 func main() {
@@ -676,7 +678,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	}
 
 	// 1. 12-word seed phrase
-	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, birthday) //nolint:mnd
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
@@ -684,17 +686,22 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	fmt.Print("\n\n")
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
 
-	// 2. 16-word seed phrase (Polyseed)
-	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
+	// 2. 16-word seed phrases (Polyseed) — one per polyseed year
+	years, err := getPolyseedYears()
 	if err != nil {
-		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
+		return fmt.Errorf("invalid --polyseed-year: %w", err)
 	}
-	// 2 empty lines between outputs
-	fmt.Print("\n\n")
-	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
+	for _, year := range years {
+		mnemonic16, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+		if mnErr != nil {
+			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
+		}
+		fmt.Print("\n\n")
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (%d)", year), mnemonic16)
+	}
 
 	// 3. 24-word seed phrase (standard, no prefix)
-	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -757,16 +764,12 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 		return fmt.Errorf("unknown key type: %v", key)
 	}
 
-	// Generate mnemonics for phrases and derivations
-	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, birthday) //nolint:mnd
+	// Generate non-polyseed mnemonics
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
-	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
-	}
-	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -775,11 +778,32 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 	}
 
+	// Generate polyseed mnemonics — one per polyseed year
+	years, err := getPolyseedYears()
+	if err != nil {
+		return fmt.Errorf("invalid --polyseed-year: %w", err)
+	}
+
+	type polyseedEntry struct {
+		year     int
+		mnemonic string
+	}
+	polyseeds := make([]polyseedEntry, 0, len(years))
+	for _, year := range years {
+		m, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+		if mnErr != nil {
+			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
+		}
+		polyseeds = append(polyseeds, polyseedEntry{year: year, mnemonic: m})
+	}
+
 	// Output curated phrases in PEM format
 	fmt.Print("\n\n")
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
-	fmt.Print("\n\n")
-	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
+	for _, ps := range polyseeds {
+		fmt.Print("\n\n")
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (%d)", ps.year), ps.mnemonic)
+	}
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 	fmt.Print("\n\n")
@@ -792,19 +816,21 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 		return nil
 	}
 
-	// Monero from 16-word polyseed
+	// Monero from 16-word polyseed (one set of addresses per year)
 	if deriveXmr {
-		xmrKeys, err := seedify.DeriveMoneroKeys(mnemonic16, 9) //nolint:mnd
-		if err != nil {
-			return fmt.Errorf("failed to derive Monero keys from 16-word polyseed: %w", err)
+		for _, ps := range polyseeds {
+			xmrKeys, xmrErr := seedify.DeriveMoneroKeys(ps.mnemonic, 9) //nolint:mnd
+			if xmrErr != nil {
+				return fmt.Errorf("failed to derive Monero keys from 16-word polyseed (%d): %w", ps.year, xmrErr)
+			}
+			fmt.Printf("[monero addresses from 16 word polyseed (%d)]\n", ps.year)
+			fmt.Println()
+			fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
+			for i, subaddr := range xmrKeys.Subaddresses {
+				fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, i+1)
+			}
+			fmt.Println()
 		}
-		fmt.Printf("[monero addresses from 16 word polyseed]\n")
-		fmt.Println()
-		fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
-		for i, subaddr := range xmrKeys.Subaddresses {
-			fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, i+1)
-		}
-		fmt.Println()
 	}
 
 	// Nostr keys from 12 and 24 word
@@ -1072,241 +1098,257 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		return fmt.Errorf("unknown key type: %v", key)
 	}
 
+	// Resolve polyseed years once before the loop
+	years, err := getPolyseedYears()
+	if err != nil {
+		return fmt.Errorf("invalid --polyseed-year: %w", err)
+	}
+
 	// Generate and display outputs for each word count
 	for i, count := range wordCounts {
-		// Generate seed phrase
-		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, birthday)
-		if err != nil {
-			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, err)
-		}
+		// For 16-word polyseed, generate one mnemonic per year
+		if count == 16 { //nolint:nestif
+			for _, year := range years {
+				mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+				if mnErr != nil {
+					return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
+				}
 
-		// Display seed phrase
-		fmt.Printf("[%d word seed phrase]\n", count)
-		fmt.Println()
-		fmt.Println(mnemonic)
-		fmt.Println()
+				fmt.Printf("[16 word seed phrase (%d)]\n", year)
+				fmt.Println()
+				fmt.Println(mnemonic)
+				fmt.Println()
 
-		// Derive and display Monero addresses for 16-word polyseed
-		if count == 16 && deriveXmr {
-			// Generate primary address plus 9 subaddresses
-			xmrKeys, err := seedify.DeriveMoneroKeys(mnemonic, 9) //nolint:mnd
-			if err != nil {
-				return fmt.Errorf("failed to derive Monero keys from 16-word polyseed: %w", err)
+				if deriveXmr {
+					xmrKeys, xmrErr := seedify.DeriveMoneroKeys(mnemonic, 9) //nolint:mnd
+					if xmrErr != nil {
+						return fmt.Errorf("failed to derive Monero keys from 16-word polyseed (%d): %w", year, xmrErr)
+					}
+
+					fmt.Printf("[monero addresses from 16 word polyseed (%d)]\n", year)
+					fmt.Println()
+					fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
+					for j, subaddr := range xmrKeys.Subaddresses {
+						fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, j+1)
+					}
+					fmt.Println()
+				}
+			}
+		} else {
+			mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, 0)
+			if mnErr != nil {
+				return fmt.Errorf("could not generate %d-word mnemonic: %w", count, mnErr)
 			}
 
-			fmt.Printf("[monero addresses from 16 word polyseed]\n")
+			fmt.Printf("[%d word seed phrase]\n", count)
 			fmt.Println()
-			fmt.Printf("%s (primary address)\n", xmrKeys.PrimaryAddress)
-			for i, subaddr := range xmrKeys.Subaddresses {
-				fmt.Printf("> %s (subaddress 0,%d)\n", subaddr, i+1)
-			}
+			fmt.Println(mnemonic)
 			fmt.Println()
-		}
 
-		// Derive and display nostr keys for 12-word and 24-word seed phrases only
-		if deriveNostr && (count == 12 || count == 24) {
-			nostrKeys, err := seedify.DeriveNostrKeysWithHex(mnemonic, "")
-			if err != nil {
-				return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, err)
-			}
-
-			fmt.Printf("[nostr keys from %d word seed]\n", count)
-			fmt.Println()
-			fmt.Printf("%s (nostr public key aka \"nostr user\")\n", nostrKeys.Npub)
-			fmt.Printf("└─ %s (hex)\n", nostrKeys.PubKeyHex)
-			fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nostrKeys.Nsec)
-			fmt.Printf("└─ %s (hex)\n", nostrKeys.PrivKeyHex)
-			fmt.Println()
-		}
-
-		// Derive and display Bitcoin keys for 12 or 24-word seed phrase
-		if (count == 12 || count == 24) && deriveBtc {
-			// Derive all Bitcoin keys and extended keys
-			if err := displayBitcoinOutput(mnemonic, count); err != nil {
-				return err
-			}
-		}
-
-		// Derive and display Ethereum/Solana/Tron and other chain addresses for 24-word seed phrase only.
-		// Extra chains (Litecoin, Dogecoin, Cosmos, Noble, Sui, Stellar, Ripple) are only shown when
-		// the user has requested at least one crypto derivation via --btc, --eth, --sol, or --tron.
-		// This keeps --words 24 output minimal when no derivation flags are passed.
-		if count == 24 { //nolint:mnd,nestif
-			hasAnyCryptoFlag := deriveBtc || deriveEth || deriveZec || deriveSol || deriveTron
-
-			// Ethereum address
-			if deriveEth {
-				ethAddr, err := seedify.DeriveEthereumAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Ethereum address from 24-word seed: %w", err)
+			// Derive and display nostr keys for 12-word and 24-word seed phrases only
+			if deriveNostr && (count == 12 || count == 24) {
+				nostrKeys, nErr := seedify.DeriveNostrKeysWithHex(mnemonic, "")
+				if nErr != nil {
+					return fmt.Errorf("failed to derive Nostr keys from %d-word mnemonic: %w", count, nErr)
 				}
 
-				fmt.Printf("[ethereum address from 24 word seed]\n")
+				fmt.Printf("[nostr keys from %d word seed]\n", count)
 				fmt.Println()
-				fmt.Println(ethAddr)
+				fmt.Printf("%s (nostr public key aka \"nostr user\")\n", nostrKeys.Npub)
+				fmt.Printf("└─ %s (hex)\n", nostrKeys.PubKeyHex)
+				fmt.Printf("%s (nostr secret key aka \"nostr pass\")\n", nostrKeys.Nsec)
+				fmt.Printf("└─ %s (hex)\n", nostrKeys.PrivKeyHex)
 				fmt.Println()
 			}
 
-			// Zcash address (below Ethereum, shown when any crypto derivation is requested)
-			if hasAnyCryptoFlag {
-				zcashAddr, err := seedify.DeriveZcashAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Zcash address from 24-word seed: %w", err)
+			// Derive and display Bitcoin keys for 12 or 24-word seed phrase
+			if (count == 12 || count == 24) && deriveBtc {
+				if btcErr := displayBitcoinOutput(mnemonic, count); btcErr != nil {
+					return btcErr
 				}
-
-				fmt.Printf("[zcash address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(zcashAddr)
-				fmt.Println()
 			}
 
-			// Solana address
-			if deriveSol {
-				solAddr, err := seedify.DeriveSolanaAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Solana address from 24-word seed: %w", err)
+			// Derive and display Ethereum/Solana/Tron and other chain addresses for 24-word seed phrase only.
+			// Extra chains (Litecoin, Dogecoin, Cosmos, Noble, Sui, Stellar, Ripple) are only shown when
+			// the user has requested at least one crypto derivation via --btc, --eth, --sol, or --tron.
+			// This keeps --words 24 output minimal when no derivation flags are passed.
+			if count == 24 { //nolint:mnd,nestif
+				hasAnyCryptoFlag := deriveBtc || deriveEth || deriveZec || deriveSol || deriveTron
+
+				// Ethereum address
+				if deriveEth {
+					ethAddr, ethErr := seedify.DeriveEthereumAddress(mnemonic, "")
+					if ethErr != nil {
+						return fmt.Errorf("failed to derive Ethereum address from 24-word seed: %w", ethErr)
+					}
+
+					fmt.Printf("[ethereum address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(ethAddr)
+					fmt.Println()
 				}
 
-				fmt.Printf("[solana address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(solAddr)
-				fmt.Println()
-			}
+				// Zcash address (below Ethereum, shown when any crypto derivation is requested)
+				if hasAnyCryptoFlag {
+					zcashAddr, zErr := seedify.DeriveZcashAddress(mnemonic, "")
+					if zErr != nil {
+						return fmt.Errorf("failed to derive Zcash address from 24-word seed: %w", zErr)
+					}
 
-			// Tron address
-			if deriveTron {
-				tronAddr, err := seedify.DeriveTronAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Tron address from 24-word seed: %w", err)
+					fmt.Printf("[zcash address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(zcashAddr)
+					fmt.Println()
 				}
 
-				fmt.Printf("[tron address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(tronAddr)
-				fmt.Println()
-			}
+				// Solana address
+				if deriveSol {
+					solAddr, solErr := seedify.DeriveSolanaAddress(mnemonic, "")
+					if solErr != nil {
+						return fmt.Errorf("failed to derive Solana address from 24-word seed: %w", solErr)
+					}
 
-			// EVM-compatible chain addresses (reuse Ethereum address)
-			if deriveEth {
-				evmAddr, evmErr := seedify.DeriveEthereumAddress(mnemonic, "")
-				if evmErr != nil {
-					return fmt.Errorf("failed to derive EVM address from 24-word seed: %w", evmErr)
+					fmt.Printf("[solana address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(solAddr)
+					fmt.Println()
 				}
 
-				fmt.Printf("[arbitrum address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
+				// Tron address
+				if deriveTron {
+					tronAddr, tErr := seedify.DeriveTronAddress(mnemonic, "")
+					if tErr != nil {
+						return fmt.Errorf("failed to derive Tron address from 24-word seed: %w", tErr)
+					}
 
-				fmt.Printf("[avalanche address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-
-				fmt.Printf("[base address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-
-				fmt.Printf("[bnbchain address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-
-				fmt.Printf("[cronos address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-
-				fmt.Printf("[optimism address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-
-				fmt.Printf("[polygon address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(evmAddr)
-				fmt.Println()
-			}
-
-			// Extra chains: only show when user requested at least one crypto derivation
-			if hasAnyCryptoFlag {
-				// Litecoin address (native SegWit)
-				ltcAddr, err := seedify.DeriveLitecoinAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Litecoin address from 24-word seed: %w", err)
+					fmt.Printf("[tron address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(tronAddr)
+					fmt.Println()
 				}
 
-				fmt.Printf("[litecoin address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(ltcAddr)
-				fmt.Println()
+				// EVM-compatible chain addresses (reuse Ethereum address)
+				if deriveEth {
+					evmAddr, evmErr := seedify.DeriveEthereumAddress(mnemonic, "")
+					if evmErr != nil {
+						return fmt.Errorf("failed to derive EVM address from 24-word seed: %w", evmErr)
+					}
 
-				// Dogecoin address
-				dogeAddr, err := seedify.DeriveDogecoinAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Dogecoin address from 24-word seed: %w", err)
+					fmt.Printf("[arbitrum address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[avalanche address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[base address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[bnbchain address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[cronos address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[optimism address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
+
+					fmt.Printf("[polygon address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(evmAddr)
+					fmt.Println()
 				}
 
-				fmt.Printf("[dogecoin address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(dogeAddr)
-				fmt.Println()
+				// Extra chains: only show when user requested at least one crypto derivation
+				if hasAnyCryptoFlag {
+					// Litecoin address (native SegWit)
+					ltcAddr, ltcErr := seedify.DeriveLitecoinAddress(mnemonic, "")
+					if ltcErr != nil {
+						return fmt.Errorf("failed to derive Litecoin address from 24-word seed: %w", ltcErr)
+					}
 
-				// Cosmos address
-				cosmosAddr, err := seedify.DeriveCosmosAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Cosmos address from 24-word seed: %w", err)
+					fmt.Printf("[litecoin address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(ltcAddr)
+					fmt.Println()
+
+					// Dogecoin address
+					dogeAddr, dogeErr := seedify.DeriveDogecoinAddress(mnemonic, "")
+					if dogeErr != nil {
+						return fmt.Errorf("failed to derive Dogecoin address from 24-word seed: %w", dogeErr)
+					}
+
+					fmt.Printf("[dogecoin address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(dogeAddr)
+					fmt.Println()
+
+					// Cosmos address
+					cosmosAddr, cosmosErr := seedify.DeriveCosmosAddress(mnemonic, "")
+					if cosmosErr != nil {
+						return fmt.Errorf("failed to derive Cosmos address from 24-word seed: %w", cosmosErr)
+					}
+
+					fmt.Printf("[cosmos address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(cosmosAddr)
+					fmt.Println()
+
+					// Noble address
+					nobleAddr, nobleErr := seedify.DeriveNobleAddress(mnemonic, "")
+					if nobleErr != nil {
+						return fmt.Errorf("failed to derive Noble address from 24-word seed: %w", nobleErr)
+					}
+
+					fmt.Printf("[noble address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(nobleAddr)
+					fmt.Println()
+
+					// Sui address
+					suiAddr, suiErr := seedify.DeriveSuiAddress(mnemonic, "")
+					if suiErr != nil {
+						return fmt.Errorf("failed to derive Sui address from 24-word seed: %w", suiErr)
+					}
+
+					fmt.Printf("[sui address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(suiAddr)
+					fmt.Println()
+
+					// Stellar address
+					xlmAddr, xlmErr := seedify.DeriveStellarAddress(mnemonic, "")
+					if xlmErr != nil {
+						return fmt.Errorf("failed to derive Stellar address from 24-word seed: %w", xlmErr)
+					}
+
+					fmt.Printf("[stellar address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(xlmAddr)
+					fmt.Println()
+
+					// Ripple address
+					xrpAddr, xrpErr := seedify.DeriveRippleAddress(mnemonic, "")
+					if xrpErr != nil {
+						return fmt.Errorf("failed to derive Ripple address from 24-word seed: %w", xrpErr)
+					}
+
+					fmt.Printf("[ripple address from 24 word seed]\n")
+					fmt.Println()
+					fmt.Println(xrpAddr)
+					fmt.Println()
 				}
-
-				fmt.Printf("[cosmos address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(cosmosAddr)
-				fmt.Println()
-
-				// Noble address
-				nobleAddr, err := seedify.DeriveNobleAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Noble address from 24-word seed: %w", err)
-				}
-
-				fmt.Printf("[noble address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(nobleAddr)
-				fmt.Println()
-
-				// Sui address
-				suiAddr, err := seedify.DeriveSuiAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Sui address from 24-word seed: %w", err)
-				}
-
-				fmt.Printf("[sui address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(suiAddr)
-				fmt.Println()
-
-				// Stellar address
-				xlmAddr, err := seedify.DeriveStellarAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Stellar address from 24-word seed: %w", err)
-				}
-
-				fmt.Printf("[stellar address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(xlmAddr)
-				fmt.Println()
-
-				// Ripple address
-				xrpAddr, err := seedify.DeriveRippleAddress(mnemonic, "")
-				if err != nil {
-					return fmt.Errorf("failed to derive Ripple address from 24-word seed: %w", err)
-				}
-
-				fmt.Printf("[ripple address from 24 word seed]\n")
-				fmt.Println()
-				fmt.Println(xrpAddr)
-				fmt.Println()
 			}
 		}
 
@@ -1713,7 +1755,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 	sshPubKeyBase64 := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
 
-	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
+	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -1748,7 +1790,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Dogecoin address: %w", err)
 	}
 
-	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
+	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(time.Now().Year())) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
