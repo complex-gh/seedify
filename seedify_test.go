@@ -21,7 +21,7 @@ func TestToMnemonicWithLength_Polyseed(t *testing.T) {
 	is.NoErr(err)
 
 	// Test 16-word polyseed format
-	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false)
+	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 	is.True(mnemonic != "")
 
@@ -43,7 +43,7 @@ func TestToMnemonicWithLength_AllFormats(t *testing.T) {
 	for _, count := range validCounts {
 		t.Run(string(rune(count)), func(t *testing.T) {
 			is := is.New(t)
-			mnemonic, err := ToMnemonicWithLength(&key, count, "", false)
+			mnemonic, err := ToMnemonicWithLength(&key, count, "", false, PolyseedDefaultBirthday)
 			is.NoErr(err)
 			is.True(mnemonic != "")
 
@@ -66,7 +66,7 @@ func TestToMnemonicWithLength_InvalidWordCount(t *testing.T) {
 	for _, count := range invalidCounts {
 		t.Run(string(rune(count)), func(t *testing.T) {
 			is := is.New(t)
-			_, err := ToMnemonicWithLength(&key, count, "", false)
+			_, err := ToMnemonicWithLength(&key, count, "", false, PolyseedDefaultBirthday)
 			is.True(err != nil)
 		})
 	}
@@ -82,13 +82,13 @@ func TestToMnemonicWithLength_Deterministic(t *testing.T) {
 	is.NoErr(err)
 
 	// Generate multiple times with same parameters
-	mnemonic1, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
+	mnemonic1, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
-	mnemonic2, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
+	mnemonic2, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
-	mnemonic3, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false)
+	mnemonic3, err := ToMnemonicWithLength(&key, 16, "test-passphrase", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	// All should be identical
@@ -109,19 +109,19 @@ func TestToMnemonicWithLength_DifferentInputsProduceDifferentResults(t *testing.
 	is.NoErr(err)
 
 	// Same word count, different keys should produce different results
-	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "", false)
+	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
-	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "", false)
+	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	is.True(mnemonic1 != mnemonic2)
 
 	// Same key, different passphrases should produce different results
-	mnemonic3, err := ToMnemonicWithLength(&key1, 16, "passphrase1", false)
+	mnemonic3, err := ToMnemonicWithLength(&key1, 16, "passphrase1", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
-	mnemonic4, err := ToMnemonicWithLength(&key1, 16, "passphrase2", false)
+	mnemonic4, err := ToMnemonicWithLength(&key1, 16, "passphrase2", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	is.True(mnemonic3 != mnemonic4)
@@ -559,7 +559,7 @@ func TestDeriveMoneroAddress_ValidFormat(t *testing.T) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	is.NoErr(err)
 
-	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false)
+	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	addr, err := DeriveMoneroAddress(mnemonic)
@@ -581,7 +581,7 @@ func TestDeriveMoneroAddress_Deterministic(t *testing.T) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	is.NoErr(err)
 
-	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false)
+	mnemonic, err := ToMnemonicWithLength(&key, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	// Derive address multiple times
@@ -611,10 +611,10 @@ func TestDeriveMoneroAddress_DifferentMnemonicsProduceDifferentAddresses(t *test
 	_, key2, err := ed25519.GenerateKey(rand.Reader)
 	is.NoErr(err)
 
-	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "", false)
+	mnemonic1, err := ToMnemonicWithLength(&key1, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
-	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "", false)
+	mnemonic2, err := ToMnemonicWithLength(&key2, 16, "", false, PolyseedDefaultBirthday)
 	is.NoErr(err)
 
 	addr1, err := DeriveMoneroAddress(mnemonic1)

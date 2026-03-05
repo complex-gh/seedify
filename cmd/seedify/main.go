@@ -61,6 +61,8 @@ var (
 	zenprofile      bool
 	publishRelays   string
 	zenprofileAppID string
+	birthday          uint64
+	polyseedBirthday string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -100,6 +102,12 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			if err := setLanguage(language); err != nil {
 				return err
 			}
+
+			parsedBirthday, err := parsePolyseedBirthday(polyseedBirthday)
+			if err != nil {
+				return fmt.Errorf("invalid --polyseed-birthday value %q: %w", polyseedBirthday, err)
+			}
+			birthday = parsedBirthday
 
 			var keyPath string
 			if len(args) > 0 {
@@ -249,7 +257,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				deriveXmr = monero
 			}
 
-			err := generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr)
+			err = generateUnifiedOutput(keyPath, wordCounts, seedPassphrase, deriveNostr, showBrave, deriveBtc, deriveEth, deriveZec, deriveSol, deriveTron, deriveXmr)
 			if err != nil && strings.Contains(err.Error(), "key is not password-protected") {
 				return formatPasswordError(err)
 			}
@@ -398,10 +406,31 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
 	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.contactme", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
+	rootCmd.PersistentFlags().StringVar(&polyseedBirthday, "polyseed-birthday", "2026-01", `Polyseed birthday date (YYYY-MM or YYYY-MM-DD, or "now" for current time)`)
+
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
 	braveSync25thCmd.Flags().StringVar(&dateStr, "date", "", "Get the 25th word for a specific date (format: YYYY-MM-DD)")
+}
+
+// parsePolyseedBirthday parses a human-friendly date string into a Unix timestamp.
+// Accepted formats: "YYYY-MM", "YYYY-MM-DD", or "now" (for current time, which
+// maps to 0 in the polyseed library).
+func parsePolyseedBirthday(s string) (uint64, error) {
+	if s == "now" {
+		return 0, nil
+	}
+
+	// Try YYYY-MM-DD first, then YYYY-MM
+	for _, layout := range []string{"2006-01-02", "2006-01"} {
+		t, err := time.Parse(layout, s)
+		if err == nil {
+			return uint64(t.Unix()), nil //nolint:gosec
+		}
+	}
+
+	return 0, fmt.Errorf("expected YYYY-MM, YYYY-MM-DD, or \"now\"")
 }
 
 func main() {
@@ -647,7 +676,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	}
 
 	// 1. 12-word seed phrase
-	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false) //nolint:mnd
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
@@ -656,7 +685,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
 
 	// 2. 16-word seed phrase (Polyseed)
-	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
 	}
@@ -665,7 +694,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	printPEMPhrase("16-WORD POLYSEED", mnemonic16)
 
 	// 3. 24-word seed phrase (standard, no prefix)
-	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -729,15 +758,15 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	}
 
 	// Generate mnemonics for phrases and derivations
-	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false) //nolint:mnd
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
-	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	mnemonic16, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 16-word mnemonic: %w", err)
 	}
-	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -1046,7 +1075,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 	// Generate and display outputs for each word count
 	for i, count := range wordCounts {
 		// Generate seed phrase
-		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false)
+		mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, birthday)
 		if err != nil {
 			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, err)
 		}
@@ -1684,7 +1713,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 	sshPubKeyBase64 := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
 
-	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false) //nolint:mnd
+	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -1719,7 +1748,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Dogecoin address: %w", err)
 	}
 
-	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false) //nolint:mnd
+	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthday) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
