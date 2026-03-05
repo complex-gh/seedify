@@ -1107,7 +1107,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 	// Generate and display outputs for each word count
 	for i, count := range wordCounts {
 		// For 16-word polyseed, generate one mnemonic per year
-		if count == 16 { //nolint:nestif
+		if count == 16 { //nolint:mnd,nestif
 			for _, year := range years {
 				mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
 				if mnErr != nil {
@@ -1172,7 +1172,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 			// Extra chains (Litecoin, Dogecoin, Cosmos, Noble, Sui, Stellar, Ripple) are only shown when
 			// the user has requested at least one crypto derivation via --btc, --eth, --sol, or --tron.
 			// This keeps --words 24 output minimal when no derivation flags are passed.
-			if count == 24 { //nolint:mnd,nestif
+			if count == 24 { //nolint:mnd
 				hasAnyCryptoFlag := deriveBtc || deriveEth || deriveZec || deriveSol || deriveTron
 
 				// Ethereum address
