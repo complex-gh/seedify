@@ -50,6 +50,11 @@ const (
 	bip39MaxWordCount = 24
 	// msPerSecond is the number of milliseconds in one second.
 	msPerSecond = 1000
+
+	// PolyseedDefaultBirthday is the default polyseed birthday (1 Jan 2026 00:00 UTC).
+	// Using a fixed timestamp ensures deterministic mnemonic output.
+	// Pass 0 to use the current time (non-deterministic).
+	PolyseedDefaultBirthday = uint64(1767225600)
 	// bip32ChainCodeSize is the size in bytes of a BIP32 chain code.
 	bip32ChainCodeSize = 32
 	// compressedPubKeySize is the size in bytes of a compressed secp256k1 public key (1 prefix + 32 x).
@@ -99,6 +104,10 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 // If brave is true, the hash of "brave" is prepended to the entropy (similar to
 // word count) to generate a different set of words.
 //
+// birthday is a Unix timestamp used as the polyseed creation date for 16-word
+// mnemonics. Use PolyseedEpoch for deterministic output, or 0 for the current
+// time. This parameter is ignored for non-polyseed word counts.
+//
 // Valid word counts are: 12, 15, 16, 18, 21, or 24.
 // The entropy size is determined by the word count:
 //   - 12 words = 128 bits (16 bytes) - BIP39
@@ -107,13 +116,13 @@ func combineSeedPassphrase(keySeed []byte, seedPassphrase string) []byte {
 //   - 18 words = 192 bits (24 bytes) - BIP39
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
-func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, brave bool) (string, error) {
+func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error) {
 	// Delegate to ToMnemonicWithPrefix with "brave" as the prefix when brave is true
 	var prefix string
 	if brave {
 		prefix = "brave"
 	}
-	return ToMnemonicWithPrefix(key, wordCount, seedPassphrase, prefix)
+	return ToMnemonicWithPrefix(key, wordCount, seedPassphrase, prefix, birthday)
 }
 
 // ToMnemonicWithPrefix takes an ed25519 private key and returns a mnemonic
@@ -133,6 +142,10 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 // Exception: For 24 words (when prefix is empty), the raw seed is used directly
 // without prepending word count or hashing.
 //
+// birthday is a Unix timestamp used as the polyseed creation date for 16-word
+// mnemonics. Use PolyseedEpoch for deterministic output, or 0 for the current
+// time. This parameter is ignored for non-polyseed word counts.
+//
 // Valid word counts are: 12, 15, 16, 18, 21, or 24.
 // The entropy size is determined by the word count:
 //   - 12 words = 128 bits (16 bytes) - BIP39
@@ -141,7 +154,7 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 //   - 18 words = 192 bits (24 bytes) - BIP39
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
-func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, prefix string) (string, error) {
+func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
 	// Get the full seed (32 bytes)
 	fullSeed := key.Seed()
 
@@ -198,7 +211,7 @@ func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 		hash := sha256.Sum256(prefixedSeed)
 		polyseedBytes := hash[:19]
 
-		seed, err := polyseed.CreateFromBytes(polyseedBytes, 0)
+		seed, err := polyseed.CreateFromBytesWithBirthday(polyseedBytes, 0, birthday)
 		if err != nil {
 			return "", fmt.Errorf("could not create polyseed: %w", err)
 		}
@@ -305,7 +318,7 @@ func BraveSync25thWordForDate(date time.Time) (string, error) {
 // with the brave flag set, then appends the current day's 25th word from Brave Sync.
 func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (string, error) {
 	// Generate 24 words with brave flag set
-	mnemonic24, err := ToMnemonicWithLength(key, bip39MaxWordCount, seedPassphrase, true)
+	mnemonic24, err := ToMnemonicWithLength(key, bip39MaxWordCount, seedPassphrase, true, 0)
 	if err != nil {
 		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
