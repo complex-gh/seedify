@@ -72,9 +72,9 @@ Valid word counts are: 12, 15, 16, 18, 21, or 24.
 - 12, 15, 18, 21, 24 words use BIP39 format
 - 16 words use Polyseed format
 
-By default, two 16-word Polyseed phrases are shown: one for last year
-and one for the current year (using January 1 as the birthday). Use
---polyseed-year to override with a single specific year.
+By default, one 16-word Polyseed phrase is shown for the current year
+(using January 1 as the birthday). Use --polyseed-year to override
+with a specific year.
 
 SECURITY TIP: Add a space before the command to prevent it from being
 saved in your shell history. For example:
@@ -405,7 +405,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&zenprofile, "zenprofile", false, "Output public keys and addresses as DNS JSON to stdout")
 	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.contactme", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
-	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: show both last year and current year")
+	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -417,8 +417,7 @@ func init() {
 // If set, returns a single-element slice with the parsed year.
 func getPolyseedYears() ([]int, error) {
 	if polyseedYear == "" {
-		now := time.Now().Year()
-		return []int{now - 1, now}, nil
+		return []int{time.Now().Year()}, nil
 	}
 
 	year, err := strconv.Atoi(polyseedYear)
@@ -697,7 +696,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
 		}
 		fmt.Print("\n\n")
-		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED 1.1.%d", year), mnemonic16)
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (1.1.%d)", year), mnemonic16)
 	}
 
 	// 3. 24-word seed phrase (standard, no prefix)
@@ -802,7 +801,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
 	for _, ps := range polyseeds {
 		fmt.Print("\n\n")
-		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED 1.1.%d", ps.year), ps.mnemonic)
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (1.1.%d)", ps.year), ps.mnemonic)
 	}
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
