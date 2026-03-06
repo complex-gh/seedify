@@ -697,7 +697,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
 		}
 		fmt.Print("\n\n")
-		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (%d)", year), mnemonic16)
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED 1.1.%d", year), mnemonic16)
 	}
 
 	// 3. 24-word seed phrase (standard, no prefix)
@@ -802,7 +802,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	printPEMPhrase("12-WORD SEED PHRASE", mnemonic12)
 	for _, ps := range polyseeds {
 		fmt.Print("\n\n")
-		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED (%d)", ps.year), ps.mnemonic)
+		printPEMPhrase(fmt.Sprintf("16-WORD POLYSEED 1.1.%d", ps.year), ps.mnemonic)
 	}
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
