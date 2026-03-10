@@ -8,7 +8,7 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/chekist32/go-monero v0.2.5
-	github.com/complex-gh/polyseed_go v1.0.2-0.20260305080931-50509af6377b
+	github.com/complex-gh/polyseed_go v1.1.0
 	github.com/matryer/is v1.4.1
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-tty v0.0.7
