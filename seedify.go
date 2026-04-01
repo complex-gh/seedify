@@ -13,6 +13,7 @@ package seedify
 import (
 	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
@@ -70,6 +71,29 @@ var entropySizeMap = map[int]int{
 	18: 24, // 192 bits
 	21: 28, // 224 bits
 	24: 32, // 256 bits
+}
+
+// RSASeedBytes derives a deterministic 32-byte seed from an RSA private key by
+// hashing the two secret prime factors with SHA-256: SHA256(P || Q).
+// P and Q are the root secrets of an RSA key pair — all other components
+// (N, D, Dp, Dq, Qinv) are derived from them.
+//
+// Returns an error if the key does not have at least two prime factors.
+func RSASeedBytes(key *rsa.PrivateKey) ([]byte, error) {
+	if len(key.Primes) < 2 { //nolint:mnd
+		return nil, fmt.Errorf("RSA key must have at least two prime factors, got %d", len(key.Primes))
+	}
+
+	p := key.Primes[0].Bytes()
+	q := key.Primes[1].Bytes()
+
+	combined := make([]byte, len(p)+len(q))
+	copy(combined, p)
+	copy(combined[len(p):], q)
+
+	hash := sha256.Sum256(combined)
+
+	return hash[:], nil
 }
 
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create
@@ -155,9 +179,14 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
 func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
-	// Get the full seed (32 bytes)
-	fullSeed := key.Seed()
+	return toMnemonicFromSeedBytes(key.Seed(), wordCount, seedPassphrase, prefix, birthday)
+}
 
+// toMnemonicFromSeedBytes is the internal implementation shared by all mnemonic generation
+// functions regardless of key type. It accepts a raw 32-byte seed (extracted from the
+// key by the caller) and applies passphrase mixing, word-count prefixing, and hashing
+// before producing the final BIP-39 or Polyseed mnemonic.
+func toMnemonicFromSeedBytes(fullSeed []byte, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
 	// Combine with seed passphrase if provided
 	var combinedSeed []byte
 	if seedPassphrase != "" {
@@ -333,6 +362,49 @@ func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (st
 	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
 }
 
+// ToMnemonicWithLengthFromRSA is the RSA analogue of ToMnemonicWithLength.
+// It extracts a 32-byte seed from the RSA private key via RSASeedBytes and
+// delegates to the same internal mnemonic pipeline.
+//
+// See ToMnemonicWithLength for parameter and word-count documentation.
+func ToMnemonicWithLengthFromRSA(key *rsa.PrivateKey, wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error) {
+	var prefix string
+	if brave {
+		prefix = "brave"
+	}
+	return ToMnemonicWithPrefixFromRSA(key, wordCount, seedPassphrase, prefix, birthday)
+}
+
+// ToMnemonicWithPrefixFromRSA is the RSA analogue of ToMnemonicWithPrefix.
+// It extracts a 32-byte seed from the RSA private key via RSASeedBytes and
+// delegates to the same internal mnemonic pipeline.
+//
+// See ToMnemonicWithPrefix for parameter and word-count documentation.
+func ToMnemonicWithPrefixFromRSA(key *rsa.PrivateKey, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
+	seed, err := RSASeedBytes(key)
+	if err != nil {
+		return "", fmt.Errorf("could not extract seed from RSA key: %w", err)
+	}
+	return toMnemonicFromSeedBytes(seed, wordCount, seedPassphrase, prefix, birthday)
+}
+
+// ToMnemonicWithBraveSyncFromRSA is the RSA analogue of ToMnemonicWithBraveSync.
+// It generates a 24-word mnemonic with the "brave" prefix from an RSA key and
+// appends the current day's 25th Brave Sync word.
+func ToMnemonicWithBraveSyncFromRSA(key *rsa.PrivateKey, seedPassphrase string) (string, error) {
+	mnemonic24, err := ToMnemonicWithLengthFromRSA(key, bip39MaxWordCount, seedPassphrase, true, 0)
+	if err != nil {
+		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+
+	word25, err := BraveSync25thWord()
+	if err != nil {
+		return "", fmt.Errorf("could not get 25th word: %w", err)
+	}
+
+	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
+}
+
 // NostrKeys contains all Nostr key formats derived from a mnemonic.
 type NostrKeys struct {
 	// Npub is the public key in bech32 format (starts with "npub1")
@@ -462,6 +534,44 @@ func DeriveNostrKeysFromEd25519(key *ed25519.PrivateKey) (npub string, nsec stri
 	publicKeyHex := hex.EncodeToString(publicKey)
 
 	// Encode keys to npub/nsec format using nip19 bech32 encoding
+	npub, err = nip19.EncodePublicKey(publicKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+
+	nsec, err = nip19.EncodePrivateKey(privateKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode private key: %w", err)
+	}
+
+	return npub, nsec, nil
+}
+
+// DeriveNostrKeysFromRSA derives Nostr keys (npub/nsec) directly from an RSA private key.
+// A 32-byte seed is extracted via RSASeedBytes (SHA256 of the two prime factors P and Q),
+// then used as the secp256k1 private scalar to derive a valid Nostr key pair.
+//
+// Parameters:
+//   - key: An RSA private key (e.g., from an SSH key)
+//
+// Returns:
+//   - npub: The Nostr public key in bech32 format (starts with "npub1")
+//   - nsec: The Nostr private key in bech32 format (starts with "nsec1")
+//   - error: Any error that occurred during derivation
+func DeriveNostrKeysFromRSA(key *rsa.PrivateKey) (npub string, nsec string, err error) {
+	seed, seedErr := RSASeedBytes(key)
+	if seedErr != nil {
+		return "", "", fmt.Errorf("could not extract seed from RSA key: %w", seedErr)
+	}
+
+	privateKeyHex := hex.EncodeToString(seed)
+
+	// Derive the secp256k1 public key from the private scalar
+	publicKeyHex, pubErr := nostr.GetPublicKey(privateKeyHex)
+	if pubErr != nil {
+		return "", "", fmt.Errorf("failed to derive Nostr public key: %w", pubErr)
+	}
+
 	npub, err = nip19.EncodePublicKey(publicKeyHex)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to encode public key: %w", err)

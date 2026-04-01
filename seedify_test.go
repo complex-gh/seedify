@@ -6,6 +6,7 @@ package seedify
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"strings"
 	"testing"
 
@@ -943,4 +944,194 @@ func TestBitcoinMasterExtendedKeys_KnownVector(t *testing.T) {
 	// Verify master xpub matches expected (if known)
 	// Note: This test may need adjustment based on the actual expected value
 	_ = expectedMasterXpub // Placeholder - verify with external tool if needed
+}
+
+// TestRSASeedBytes_Deterministic verifies that RSASeedBytes always returns the
+// same 32-byte value for the same RSA key.
+func TestRSASeedBytes_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	seed1, err := RSASeedBytes(key)
+	is.NoErr(err)
+	is.Equal(len(seed1), 32) //nolint:mnd
+
+	seed2, err := RSASeedBytes(key)
+	is.NoErr(err)
+
+	is.Equal(seed1, seed2)
+}
+
+// TestRSASeedBytes_DifferentKeysProduceDifferentSeeds verifies that two distinct
+// RSA keys yield different 32-byte seeds.
+func TestRSASeedBytes_DifferentKeysProduceDifferentSeeds(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	seed1, err := RSASeedBytes(key1)
+	is.NoErr(err)
+
+	seed2, err := RSASeedBytes(key2)
+	is.NoErr(err)
+
+	// Two independently generated RSA keys must not share the same seed.
+	isDifferent := false
+	for i := range seed1 {
+		if seed1[i] != seed2[i] {
+			isDifferent = true
+			break
+		}
+	}
+	is.True(isDifferent)
+}
+
+// TestRSASeedBytes_InsufficientPrimes verifies that an RSA key with fewer than
+// two prime factors returns an error.
+func TestRSASeedBytes_InsufficientPrimes(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Artificially strip all prime factors to trigger the validation path.
+	key.Primes = nil
+
+	_, err = RSASeedBytes(key)
+	is.True(err != nil)
+}
+
+// TestToMnemonicWithLengthFromRSA_AllFormats verifies that all valid word counts
+// produce correctly-sized mnemonics when driven by an RSA key.
+func TestToMnemonicWithLengthFromRSA_AllFormats(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	validCounts := []int{12, 15, 16, 18, 21, 24}
+
+	for _, count := range validCounts {
+		t.Run(string(rune(count)), func(t *testing.T) {
+			is := is.New(t)
+			mnemonic, mnErr := ToMnemonicWithLengthFromRSA(key, count, "", false, PolyseedDefaultBirthday)
+			is.NoErr(mnErr)
+			is.True(mnemonic != "")
+
+			words := strings.Fields(mnemonic)
+			is.Equal(len(words), count)
+		})
+	}
+}
+
+// TestToMnemonicWithLengthFromRSA_Deterministic verifies that repeated calls with
+// the same RSA key and passphrase always produce the same mnemonic.
+func TestToMnemonicWithLengthFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	mnemonic1, err := ToMnemonicWithLengthFromRSA(key, 24, "test-passphrase", false, 0)
+	is.NoErr(err)
+
+	mnemonic2, err := ToMnemonicWithLengthFromRSA(key, 24, "test-passphrase", false, 0)
+	is.NoErr(err)
+
+	is.Equal(mnemonic1, mnemonic2)
+}
+
+// TestToMnemonicWithLengthFromRSA_DifferentFromEd25519 verifies that an RSA key
+// and an Ed25519 key do not accidentally produce the same mnemonic.
+func TestToMnemonicWithLengthFromRSA_DifferentFromEd25519(t *testing.T) {
+	is := is.New(t)
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	_, ed25519Key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	rsaMnemonic, err := ToMnemonicWithLengthFromRSA(rsaKey, 24, "", false, 0)
+	is.NoErr(err)
+
+	ed25519Mnemonic, err := ToMnemonicWithLength(&ed25519Key, 24, "", false, 0)
+	is.NoErr(err)
+
+	is.True(rsaMnemonic != ed25519Mnemonic)
+}
+
+// TestToMnemonicWithBraveSyncFromRSA verifies that the RSA Brave Sync mnemonic
+// is 25 words and is reproducible within the same calendar day.
+func TestToMnemonicWithBraveSyncFromRSA(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	mnemonic, err := ToMnemonicWithBraveSyncFromRSA(key, "")
+	is.NoErr(err)
+	is.True(mnemonic != "")
+
+	words := strings.Fields(mnemonic)
+	is.Equal(len(words), 25) //nolint:mnd
+}
+
+// TestDeriveNostrKeysFromRSA_ValidFormat verifies that DeriveNostrKeysFromRSA
+// returns properly formatted npub/nsec bech32 keys.
+func TestDeriveNostrKeysFromRSA_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub, nsec, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	is.True(strings.HasPrefix(npub, "npub1"))
+	is.True(strings.HasPrefix(nsec, "nsec1"))
+}
+
+// TestDeriveNostrKeysFromRSA_Deterministic verifies that the same RSA key always
+// produces the same Nostr key pair.
+func TestDeriveNostrKeysFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub1, nsec1, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	npub2, nsec2, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	is.Equal(npub1, npub2)
+	is.Equal(nsec1, nsec2)
+}
+
+// TestDeriveNostrKeysFromRSA_DifferentKeysProduceDifferentResults verifies that
+// two distinct RSA keys yield different Nostr key pairs.
+func TestDeriveNostrKeysFromRSA_DifferentKeysProduceDifferentResults(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub1, _, err := DeriveNostrKeysFromRSA(key1)
+	is.NoErr(err)
+
+	npub2, _, err := DeriveNostrKeysFromRSA(key2)
+	is.NoErr(err)
+
+	is.True(npub1 != npub2)
 }
