@@ -3,10 +3,12 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +66,11 @@ var (
 	zenprofileAppID string
 	polyseedYear    string
 
+	// derive-key flags
+	deriveKeyToRSA  bool
+	deriveKeyOutput string
+	deriveKeyBits   int
+
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
 		Short: "Generate a seed phrase from an SSH key",
@@ -94,7 +101,8 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --full
   seedify ~/.ssh/id_ed25519 --polyseed-year 2024
   seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
-  cat ~/.ssh/id_ed25519 | seedify --words 18`,
+  cat ~/.ssh/id_ed25519 | seedify --words 18
+  seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,6 +120,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			var keyPath string
 			if len(args) > 0 {
 				keyPath = args[0]
+			}
+
+			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
+			if deriveKeyToRSA {
+				return runDeriveKey(keyPath)
 			}
 
 			// --publish requires --zenprofile
@@ -407,6 +420,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.identifier", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa)")
+	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa") //nolint:mnd
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -433,6 +449,111 @@ func getPolyseedYears() ([]int, error) {
 // given year, suitable for use as a polyseed birthday.
 func birthdayFromYear(year int) uint64 {
 	return uint64(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()) //nolint:gosec
+}
+
+// runDeriveKey is the handler for the derive-key subcommand.
+// It parses the source key, derives a key of the requested type, prompts for
+// a passphrase, and writes the result as a passphrase-protected OpenSSH PEM file.
+//
+//nolint:funlen,cyclop
+func runDeriveKey(keyPath string) error {
+	// Read and parse the source key.
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	fmt.Fprintf(os.Stderr, "Deriving %d-bit RSA key (this may take a moment)...\n", deriveKeyBits)
+
+	rsaKey, deriveErr := seedify.DeriveRSAKeyFromEd25519(ed25519Key, deriveKeyBits)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive RSA key: %w", deriveErr)
+	}
+
+	var derivedKey crypto.PrivateKey = rsaKey
+
+	// Prompt for a passphrase to protect the output file.
+	fmt.Fprintf(os.Stderr, "Enter a passphrase for the derived key (cannot be empty): ")
+	outputPass, err := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("could not read passphrase: %w", err)
+	}
+	if len(outputPass) == 0 {
+		return errors.New("passphrase for derived key cannot be empty")
+	}
+
+	// Confirm the passphrase.
+	fmt.Fprintf(os.Stderr, "Confirm passphrase: ")
+	outputPassConfirm, err := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("could not read passphrase confirmation: %w", err)
+	}
+	if string(outputPass) != string(outputPassConfirm) {
+		return errors.New("passphrases do not match")
+	}
+
+	// Serialise to OpenSSH PEM format with passphrase protection.
+	pemBlock, err := ssh.MarshalPrivateKeyWithPassphrase(derivedKey, "", outputPass)
+	if err != nil {
+		return fmt.Errorf("could not marshal derived key: %w", err)
+	}
+
+	pemBytes := pem.EncodeToMemory(pemBlock)
+
+	// If no --output path was given, warn the user and ask for confirmation before
+	// printing the private key to the console.
+	if deriveKeyOutput == "" {
+		confirmed, confirmErr := confirmPrintToConsole()
+		if confirmErr != nil {
+			return fmt.Errorf("could not read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return errors.New("aborted: use --output <path> to write the derived key to a file")
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Print(string(pemBytes))
+		return nil
+	}
+
+	// Write the PEM file with restrictive permissions (owner read/write only).
+	if err := os.WriteFile(deriveKeyOutput, pemBytes, 0o600); err != nil { //nolint:mnd
+		return fmt.Errorf("could not write derived key to %s: %w", deriveKeyOutput, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nWARNING: The derived key is cryptographically linked to its source key.\n")
+	fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+	fmt.Fprintf(os.Stderr, "Derived key written to: %s\n", deriveKeyOutput)
+
+	return nil
 }
 
 func main() {
@@ -608,22 +729,16 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 		return "", fmt.Errorf("could not parse key: %w", err)
 	}
 
-	switch k := key.(type) {
-	case *ed25519.PrivateKey:
-		mnemonic, err := seedify.ToMnemonicWithBraveSync(k, seedPassphrase)
-		if err != nil {
-			return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
-		}
-		return mnemonic, nil
-	case *rsa.PrivateKey:
-		mnemonic, err := seedify.ToMnemonicWithBraveSyncFromRSA(k, seedPassphrase)
-		if err != nil {
-			return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
-		}
-		return mnemonic, nil
-	default:
-		return "", fmt.Errorf("unsupported key type: %T", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return "", unsupportedKeyTypeError(key)
 	}
+
+	mnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+	if err != nil {
+		return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
+	}
+	return mnemonic, nil
 }
 
 // printPEMPhrase prints a seed phrase wrapped in PEM-style BEGIN/END markers.
@@ -677,32 +792,13 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 		return fmt.Errorf("could not parse key: %w", err)
 	}
 
-	// Build mnemonic adapters based on key type so the output logic below is key-agnostic.
-	var (
-		toMnemonicWithLength   func(wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error)
-		toMnemonicWithBraveSync func(seedPassphrase string) (string, error)
-	)
-	switch k := key.(type) {
-	case *ed25519.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLength(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSync(k, sp)
-		}
-	case *rsa.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLengthFromRSA(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSyncFromRSA(k, sp)
-		}
-	default:
-		return fmt.Errorf("unsupported key type: %T", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
 	}
 
 	// 1. 12-word seed phrase
-	mnemonic12, err := toMnemonicWithLength(12, seedPassphrase, false, 0) //nolint:mnd
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
@@ -716,7 +812,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 		return fmt.Errorf("invalid --polyseed-year: %w", err)
 	}
 	for _, year := range years {
-		mnemonic16, mnErr := toMnemonicWithLength(16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+		mnemonic16, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
 		if mnErr != nil {
 			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
 		}
@@ -725,7 +821,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	}
 
 	// 3. 24-word seed phrase (standard, no prefix)
-	mnemonic24, err := toMnemonicWithLength(24, seedPassphrase, false, 0) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -734,7 +830,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 
 	// 4. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
-	braveMnemonic, err := toMnemonicWithBraveSync(seedPassphrase)
+	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 	}
@@ -783,38 +879,21 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 		return fmt.Errorf("could not parse key: %w", err)
 	}
 
-	// Build mnemonic adapters based on key type so the output logic below is key-agnostic.
-	var toMnemonicWithLength func(wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error)
-	var toMnemonicWithBraveSync func(seedPassphrase string) (string, error)
-	switch k := key.(type) {
-	case *ed25519.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLength(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSync(k, sp)
-		}
-	case *rsa.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLengthFromRSA(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSyncFromRSA(k, sp)
-		}
-	default:
-		return fmt.Errorf("unsupported key type: %T", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
 	}
 
 	// Generate non-polyseed mnemonics
-	mnemonic12, err := toMnemonicWithLength(12, seedPassphrase, false, 0) //nolint:mnd
+	mnemonic12, err := seedify.ToMnemonicWithLength(ed25519Key, 12, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 12-word mnemonic: %w", err)
 	}
-	mnemonic24, err := toMnemonicWithLength(24, seedPassphrase, false, 0) //nolint:mnd
+	mnemonic24, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
-	braveMnemonic, err := toMnemonicWithBraveSync(seedPassphrase)
+	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 	}
@@ -831,7 +910,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 	}
 	polyseeds := make([]polyseedEntry, 0, len(years))
 	for _, year := range years {
-		m, mnErr := toMnemonicWithLength(16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+		m, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
 		if mnErr != nil {
 			return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
 		}
@@ -962,6 +1041,16 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 func isPasswordError(err error) bool {
 	var kerr *ssh.PassphraseMissingError
 	return errors.As(err, &kerr)
+}
+
+// unsupportedKeyTypeError returns a consistent error for non-Ed25519 keys,
+// directing users to --to-rsa if they have an RSA key.
+func unsupportedKeyTypeError(key interface{}) error {
+	msg := fmt.Sprintf("only Ed25519 SSH keys are supported for seed phrase derivation (got %T)", key)
+	if _, ok := key.(*rsa.PrivateKey); ok {
+		msg += "\n\nTo derive an RSA key from an Ed25519 key, use --to-rsa.\nTo use an RSA key for derivation, first convert it: seedify <ed25519-key> --to-rsa --output <path>"
+	}
+	return errors.New(msg)
 }
 
 // isKeyPasswordProtected checks if an SSH key requires a password.
@@ -1134,26 +1223,9 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		return fmt.Errorf("could not parse key: %w", err)
 	}
 
-	// Build mnemonic adapters based on key type so the output logic below is key-agnostic.
-	var toMnemonicWithLength func(wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error)
-	var toMnemonicWithBraveSync func(seedPassphrase string) (string, error)
-	switch k := key.(type) {
-	case *ed25519.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLength(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSync(k, sp)
-		}
-	case *rsa.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLengthFromRSA(k, wc, sp, brave, bday)
-		}
-		toMnemonicWithBraveSync = func(sp string) (string, error) {
-			return seedify.ToMnemonicWithBraveSyncFromRSA(k, sp)
-		}
-	default:
-		return fmt.Errorf("unsupported key type: %T", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
 	}
 
 	// Resolve polyseed years once before the loop
@@ -1167,7 +1239,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 		// For 16-word polyseed, generate one mnemonic per year
 		if count == 16 { //nolint:mnd,nestif
 			for _, year := range years {
-				mnemonic, mnErr := toMnemonicWithLength(16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
+				mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(year)) //nolint:mnd
 				if mnErr != nil {
 					return fmt.Errorf("could not generate 16-word mnemonic for %d: %w", year, mnErr)
 				}
@@ -1193,7 +1265,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				}
 			}
 		} else {
-		mnemonic, mnErr := toMnemonicWithLength(count, seedPassphrase, false, 0)
+		mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, 0)
 		if mnErr != nil {
 			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, mnErr)
 		}
@@ -1418,7 +1490,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 	// Display brave 25-word seed phrase at the end if requested
 	if showBrave {
-		braveMnemonic, err := toMnemonicWithBraveSync(seedPassphrase)
+		braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 		if err != nil {
 			return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
 		}
@@ -1471,6 +1543,28 @@ func parseWordCounts(wordCountStr string) ([]int, error) {
 func askKeyPassphrase(path string) ([]byte, error) {
 	defer fmt.Fprintf(os.Stderr, "\n")
 	return readPassword(fmt.Sprintf("Enter the passphrase to unlock %q: ", path))
+}
+
+// confirmPrintToConsole warns the user that no --output path was provided and
+// asks whether they want to print the derived private key to the console.
+// It returns true only when the user explicitly presses 'y' or 'Y'.
+func confirmPrintToConsole() (bool, error) {
+	fmt.Fprintf(os.Stderr, "\nWARNING: No --output path provided. The derived private key will be printed to the console.\n")
+	fmt.Fprintf(os.Stderr, "Print private key to console? [y/N]: ")
+
+	t, err := tty.Open()
+	if err != nil {
+		return false, fmt.Errorf("could not open tty: %w", err)
+	}
+	defer t.Close() //nolint:errcheck
+
+	r, err := t.ReadRune()
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return false, fmt.Errorf("could not read response: %w", err)
+	}
+
+	return r == 'y' || r == 'Y', nil
 }
 
 // displayBitcoinOutput displays all Bitcoin derivations for a given mnemonic.
@@ -1806,39 +1900,19 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("could not parse key: %w", err)
 	}
 
-	// Resolve mnemonic generation and SSH public key encoding based on key type.
-	var (
-		toMnemonicWithLength func(wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error)
-		sshPubKeyBase64      string
-		sshEd25519PubKey     string
-		sshRSAPubKey         string
-	)
-	switch k := key.(type) {
-	case *ed25519.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLength(k, wc, sp, brave, bday)
-		}
-		sshPubKey, pubErr := ssh.NewPublicKey(k.Public())
-		if pubErr != nil {
-			return nil, nil, fmt.Errorf("failed to create SSH public key: %w", pubErr)
-		}
-		sshPubKeyBase64 = base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
-		sshEd25519PubKey = sshPubKeyBase64
-	case *rsa.PrivateKey:
-		toMnemonicWithLength = func(wc int, sp string, brave bool, bday uint64) (string, error) {
-			return seedify.ToMnemonicWithLengthFromRSA(k, wc, sp, brave, bday)
-		}
-		sshPubKey, pubErr := ssh.NewPublicKey(k.Public())
-		if pubErr != nil {
-			return nil, nil, fmt.Errorf("failed to create SSH public key: %w", pubErr)
-		}
-		sshPubKeyBase64 = base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
-		sshRSAPubKey = sshPubKeyBase64
-	default:
-		return nil, nil, fmt.Errorf("unsupported key type: %T", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return nil, nil, unsupportedKeyTypeError(key)
 	}
 
-	mnemonic, err := toMnemonicWithLength(24, seedPassphrase, false, 0) //nolint:mnd
+	// Encode SSH public key for the DNS record.
+	sshPubKey, pubErr := ssh.NewPublicKey(ed25519Key.Public())
+	if pubErr != nil {
+		return nil, nil, fmt.Errorf("failed to create SSH public key: %w", pubErr)
+	}
+	sshEd25519PubKey := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
+
+	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 24-word mnemonic: %w", err)
 	}
@@ -1873,7 +1947,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 		return nil, nil, fmt.Errorf("failed to derive Dogecoin address: %w", err)
 	}
 
-	polyseedMnemonic, err := toMnemonicWithLength(16, seedPassphrase, false, birthdayFromYear(time.Now().Year())) //nolint:mnd
+	polyseedMnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 16, seedPassphrase, false, birthdayFromYear(time.Now().Year())) //nolint:mnd
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not generate 16-word polyseed: %w", err)
 	}
@@ -1928,8 +2002,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 
 	record := &dnsRecord{
-		SSHEd25519:    sshEd25519PubKey,
-		SSHRSA:        sshRSAPubKey,
+		SSHEd25519: sshEd25519PubKey,
 		Nostr:         nostrKeys.Npub,
 		Npub:          nostrKeys.Npub,
 		NpubKey:       nostrKeys.Npub,

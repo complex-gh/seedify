@@ -1135,3 +1135,125 @@ func TestDeriveNostrKeysFromRSA_DifferentKeysProduceDifferentResults(t *testing.
 
 	is.True(npub1 != npub2)
 }
+
+// TestDeriveEd25519KeyFromRSA_Deterministic verifies that the same RSA key always
+// produces the same Ed25519 private key.
+func TestDeriveEd25519KeyFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived1, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	derived2, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	is.Equal(derived1, derived2)
+}
+
+// TestDeriveEd25519KeyFromRSA_DifferentKeys verifies that distinct RSA keys produce
+// distinct Ed25519 keys.
+func TestDeriveEd25519KeyFromRSA_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived1, err := DeriveEd25519KeyFromRSA(key1)
+	is.NoErr(err)
+
+	derived2, err := DeriveEd25519KeyFromRSA(key2)
+	is.NoErr(err)
+
+	is.True(string(derived1) != string(derived2))
+}
+
+// TestDeriveEd25519KeyFromRSA_ValidKey verifies that the derived Ed25519 key has
+// the expected 64-byte length and a valid public key component.
+func TestDeriveEd25519KeyFromRSA_ValidKey(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	// ed25519.PrivateKey is 64 bytes (32-byte seed + 32-byte public key).
+	is.Equal(len(derived), ed25519.PrivateKeySize)
+	// Public() must return a non-nil ed25519.PublicKey of the correct length.
+	pub, ok := derived.Public().(ed25519.PublicKey)
+	is.True(ok)
+	is.Equal(len(pub), ed25519.PublicKeySize)
+}
+
+// TestDeriveRSAKeyFromEd25519_Deterministic verifies that the same Ed25519 key and
+// bit size always produce the same RSA key.
+func TestDeriveRSAKeyFromEd25519_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived1, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived2, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Compare the modulus N — equal moduli mean equal keys.
+	is.Equal(derived1.N.Cmp(derived2.N), 0)
+}
+
+// TestDeriveRSAKeyFromEd25519_DifferentKeys verifies that distinct Ed25519 keys
+// produce distinct RSA keys.
+func TestDeriveRSAKeyFromEd25519_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	_, key1, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	_, key2, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived1, err := DeriveRSAKeyFromEd25519(&key1, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived2, err := DeriveRSAKeyFromEd25519(&key2, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(derived1.N.Cmp(derived2.N) != 0)
+}
+
+// TestDeriveRSAKeyFromEd25519_ValidKey verifies that the derived RSA key passes
+// Go's internal consistency checks.
+func TestDeriveRSAKeyFromEd25519_ValidKey(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.NoErr(derived.Validate())
+}
+
+// TestDeriveRSAKeyFromEd25519_InvalidBits verifies that unsupported bit sizes
+// return an error rather than silently producing a key.
+func TestDeriveRSAKeyFromEd25519_InvalidBits(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	for _, bits := range []int{0, 1024, 1500, 8192} {
+		_, bitsErr := DeriveRSAKeyFromEd25519(&key, bits)
+		is.True(bitsErr != nil)
+	}
+}
