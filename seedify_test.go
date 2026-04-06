@@ -7,6 +7,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"strings"
 	"testing"
 
@@ -1254,6 +1256,152 @@ func TestDeriveRSAKeyFromEd25519_InvalidBits(t *testing.T) {
 
 	for _, bits := range []int{0, 1024, 1500, 8192} {
 		_, bitsErr := DeriveRSAKeyFromEd25519(&key, bits)
+		is.True(bitsErr != nil)
+	}
+}
+
+// TestDeriveDKIMKeypair_Deterministic verifies that the same Ed25519 key,
+// selector, and bit size always produce the same DKIM keypair.
+func TestDeriveDKIMKeypair_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.Equal(string(kp1.PrivateKeyPEM), string(kp2.PrivateKeyPEM))
+	is.Equal(kp1.DNSTXTRecord, kp2.DNSTXTRecord)
+	is.Equal(kp1.PublicKeyBase64, kp2.PublicKeyBase64)
+}
+
+// TestDeriveDKIMKeypair_DifferentKeys verifies that distinct Ed25519 keys produce
+// distinct DKIM keypairs even when the selector is identical.
+func TestDeriveDKIMKeypair_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	_, key1, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	_, key2, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key1, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key2, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(string(kp1.PrivateKeyPEM) != string(kp2.PrivateKeyPEM))
+	is.True(kp1.DNSTXTRecord != kp2.DNSTXTRecord)
+}
+
+// TestDeriveDKIMKeypair_DifferentSelectors verifies that the same Ed25519 key
+// with different selectors produces completely different RSA keypairs, enabling
+// selector-based key rotation from a single source key.
+func TestDeriveDKIMKeypair_DifferentSelectors(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key, "mail2026", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(string(kp1.PrivateKeyPEM) != string(kp2.PrivateKeyPEM))
+	is.True(kp1.DNSTXTRecord != kp2.DNSTXTRecord)
+}
+
+// TestDeriveDKIMKeypair_SelectorIsolatesFromRSA verifies that DeriveDKIMKeypair
+// produces a different key than DeriveRSAKeyFromEd25519 for the same source key,
+// since the two use distinct domain-separation labels.
+func TestDeriveDKIMKeypair_SelectorIsolatesFromRSA(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	rsaKey, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	dkimKP, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Parse the DKIM private key back to RSA for comparison.
+	block, _ := pem.Decode(dkimKP.PrivateKeyPEM)
+	is.True(block != nil)
+	parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+	is.NoErr(parseErr)
+	dkimRSAKey, ok := parsed.(*rsa.PrivateKey)
+	is.True(ok)
+
+	// The moduli must differ — they are derived from different labels.
+	is.True(rsaKey.N.Cmp(dkimRSAKey.N) != 0)
+}
+
+// TestDeriveDKIMKeypair_PrivateKeyIsPKCS8PEM verifies that the private key is a
+// valid PKCS#8 PEM block with the expected header and contains a valid RSA key.
+func TestDeriveDKIMKeypair_PrivateKeyIsPKCS8PEM(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Decode the PEM block and verify its type header.
+	block, rest := pem.Decode(kp.PrivateKeyPEM)
+	is.True(block != nil)
+	is.Equal(len(rest), 0)
+	is.Equal(block.Type, "PRIVATE KEY")
+
+	// Parse the DER bytes as a PKCS#8 private key and assert it is RSA.
+	parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+	is.NoErr(parseErr)
+
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
+	is.True(ok)
+	is.NoErr(rsaKey.Validate())
+	is.Equal(rsaKey.N.BitLen(), 2048) //nolint:mnd
+}
+
+// TestDeriveDKIMKeypair_DNSTXTRecord verifies that the DNS TXT record value has
+// the expected v=DKIM1; k=rsa; p= prefix and a non-empty base64 public key.
+func TestDeriveDKIMKeypair_DNSTXTRecord(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(strings.HasPrefix(kp.DNSTXTRecord, "v=DKIM1; k=rsa; p="))
+	is.True(len(kp.PublicKeyBase64) > 0)
+
+	// The DNS TXT record must contain the same base64 value as PublicKeyBase64.
+	expected := "v=DKIM1; k=rsa; p=" + kp.PublicKeyBase64
+	is.Equal(kp.DNSTXTRecord, expected)
+}
+
+// TestDeriveDKIMKeypair_InvalidBits verifies that unsupported bit sizes return
+// an error and do not produce a keypair.
+func TestDeriveDKIMKeypair_InvalidBits(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	for _, bits := range []int{0, 1024, 1500, 8192} {
+		_, bitsErr := DeriveDKIMKeypair(&key, "mail", bits)
 		is.True(bitsErr != nil)
 	}
 }

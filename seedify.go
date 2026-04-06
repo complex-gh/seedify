@@ -18,8 +18,11 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math"
@@ -198,35 +201,17 @@ var validRSABits = map[int]struct{}{
 // rsaPublicExponent is the standard RSA public exponent (2^16 + 1 = 65537).
 const rsaPublicExponent = 65537
 
-// DeriveRSAKeyFromEd25519 deterministically derives an RSA private key from an
-// Ed25519 private key. The derivation domain-separates the Ed25519 seed with
-// the label "seedify:rsa-from-ed25519:", hashes it with SHA-256 to produce a
-// 32-byte AES-256 key, and feeds an AES-256-CTR stream as the source of
-// randomness to crypto/rand.Prime — which honours the provided io.Reader.
-// This ensures the same Ed25519 key and bit size always produce the same RSA key.
+// deriveRSAKeyFromDomainHash generates an RSA private key of the given bit size
+// from a pre-computed 32-byte domain hash. The hash is used as the AES-256 seed
+// for a deterministic CTR-mode PRNG that drives prime generation.
 //
-// Note: rsa.GenerateKey in modern Go ignores the caller-provided reader, so this
-// function generates P and Q directly via deterministicPrime and assembles the
-// key manually.
-//
-// bits must be 2048, 3072, or 4096. 4096 is strongly recommended.
-// This function is computationally expensive because it involves prime search.
-//
-// Security note: if the Ed25519 key is compromised, the derived RSA key is also
-// compromised. This is a one-way derivation; the original Ed25519 key cannot be
-// recovered from the output.
-func DeriveRSAKeyFromEd25519(key *ed25519.PrivateKey, bits int) (*rsa.PrivateKey, error) {
+// Callers are responsible for constructing a properly domain-separated hash
+// before passing it in; this function treats the bytes as opaque key material.
+// bits must be 2048, 3072, or 4096.
+func deriveRSAKeyFromDomainHash(domainHash [32]byte, bits int) (*rsa.PrivateKey, error) {
 	if _, ok := validRSABits[bits]; !ok {
 		return nil, fmt.Errorf("invalid RSA bit size %d: must be 2048, 3072, or 4096", bits)
 	}
-
-	// Domain-separate the Ed25519 seed before using it as an AES key so that
-	// the raw seed bytes are never directly exposed to the AES cipher.
-	label := []byte("seedify:rsa-from-ed25519:")
-	input := make([]byte, len(label)+len(key.Seed()))
-	copy(input, label)
-	copy(input[len(label):], key.Seed())
-	domainHash := sha256.Sum256(input)
 
 	prng, err := newDeterministicReader(domainHash[:])
 	if err != nil {
@@ -282,6 +267,110 @@ func DeriveRSAKeyFromEd25519(key *ed25519.PrivateKey, bits int) (*rsa.PrivateKey
 	}
 
 	return rsaKey, nil
+}
+
+// DeriveRSAKeyFromEd25519 deterministically derives an RSA private key from an
+// Ed25519 private key. The derivation domain-separates the Ed25519 seed with
+// the label "seedify:rsa-from-ed25519:", hashes it with SHA-256 to produce a
+// 32-byte AES-256 key, and feeds an AES-256-CTR stream as the source of
+// randomness for prime generation. This ensures the same Ed25519 key and bit
+// size always produce the same RSA key.
+//
+// bits must be 2048, 3072, or 4096. 4096 is strongly recommended.
+// This function is computationally expensive because it involves prime search.
+//
+// Security note: if the Ed25519 key is compromised, the derived RSA key is also
+// compromised. This is a one-way derivation; the original Ed25519 key cannot be
+// recovered from the output.
+func DeriveRSAKeyFromEd25519(key *ed25519.PrivateKey, bits int) (*rsa.PrivateKey, error) {
+	// Domain-separate the Ed25519 seed before using it as an AES key so that
+	// the raw seed bytes are never directly exposed to the AES cipher.
+	label := []byte("seedify:rsa-from-ed25519:")
+	input := make([]byte, len(label)+len(key.Seed()))
+	copy(input, label)
+	copy(input[len(label):], key.Seed())
+
+	return deriveRSAKeyFromDomainHash(sha256.Sum256(input), bits)
+}
+
+// DKIMKeypair holds the formatted DKIM key material ready for use with a mail server.
+type DKIMKeypair struct {
+	// PrivateKeyPEM is the RSA private key encoded as a PKCS#8 PEM block
+	// ("-----BEGIN PRIVATE KEY-----"). This is the format expected by OpenDKIM,
+	// rspamd, Postfix, and Exim. DKIM private keys are stored without passphrase
+	// protection — secure the file with filesystem permissions (0600).
+	PrivateKeyPEM []byte
+
+	// DNSTXTRecord is the complete value for the DKIM selector DNS TXT record,
+	// ready to publish under <selector>._domainkey.<domain> in TXT format.
+	// Example: v=DKIM1; k=rsa; p=<base64-encoded-public-key>
+	DNSTXTRecord string
+
+	// PublicKeyBase64 is the base64-encoded DER-encoded SubjectPublicKeyInfo
+	// public key, without the surrounding v=DKIM1 wrapper. This is the raw
+	// value that goes in the p= field of the DNS TXT record.
+	PublicKeyBase64 string
+}
+
+// DeriveDKIMKeypair deterministically derives an RSA keypair from an Ed25519
+// private key and formats the output for immediate use with a DKIM-signing mail
+// server (OpenDKIM, rspamd, Postfix milter, Exim).
+//
+// The selector is mixed into the domain-separation label as
+// "seedify:dkim:<selector>:", so different selectors produce completely different
+// RSA keys from the same source Ed25519 key. This makes selector-based key
+// rotation possible without needing a new Ed25519 source key.
+//
+// The private key is marshalled as a PKCS#8 PEM block ("BEGIN PRIVATE KEY"), which
+// is the format most modern MTAs and DKIM libraries expect. No passphrase is
+// applied because DKIM private keys are conventionally stored unencrypted and
+// protected only by filesystem permissions (0600, root-owned).
+//
+// The public key is marshalled as a PKIX DER SubjectPublicKeyInfo structure,
+// base64-encoded, and wrapped in a v=DKIM1; k=rsa; p=<key> DNS TXT value ready
+// to paste into your DNS zone under <selector>._domainkey.<domain>.
+//
+// bits must be 2048, 3072, or 4096. 2048 bits is the current industry standard
+// for DKIM; 4096 produces a longer DNS TXT record that some providers may need
+// to split across multiple 255-byte strings.
+//
+// Security note: the derived DKIM key is cryptographically linked to the source
+// Ed25519 key. Compromising either key compromises both.
+func DeriveDKIMKeypair(key *ed25519.PrivateKey, selector string, bits int) (*DKIMKeypair, error) {
+	// Bind the selector into the domain-separation label so that each selector
+	// name produces a distinct RSA key from the same source Ed25519 key.
+	label := []byte("seedify:dkim:" + selector + ":")
+	input := make([]byte, len(label)+len(key.Seed()))
+	copy(input, label)
+	copy(input[len(label):], key.Seed())
+
+	rsaKey, err := deriveRSAKeyFromDomainHash(sha256.Sum256(input), bits)
+	if err != nil {
+		return nil, fmt.Errorf("could not derive RSA key for DKIM: %w", err)
+	}
+
+	// Marshal the private key as PKCS#8 DER, then wrap in a PEM block.
+	// OpenDKIM and most modern MTA DKIM implementations expect the "BEGIN PRIVATE KEY"
+	// header (PKCS#8), not the legacy "BEGIN RSA PRIVATE KEY" header (PKCS#1).
+	privDER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal DKIM private key: %w", err)
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+
+	// Marshal the public key as PKIX DER (SubjectPublicKeyInfo) and base64-encode
+	// it for the DNS TXT record p= field.
+	pubDER, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal DKIM public key: %w", err)
+	}
+	pubBase64 := base64.StdEncoding.EncodeToString(pubDER)
+
+	return &DKIMKeypair{
+		PrivateKeyPEM:   privPEM,
+		DNSTXTRecord:    fmt.Sprintf("v=DKIM1; k=rsa; p=%s", pubBase64),
+		PublicKeyBase64: pubBase64,
+	}, nil
 }
 
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create

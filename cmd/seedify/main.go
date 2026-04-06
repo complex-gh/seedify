@@ -67,9 +67,12 @@ var (
 	polyseedYear    string
 
 	// derive-key flags
-	deriveKeyToRSA  bool
-	deriveKeyOutput string
-	deriveKeyBits   int
+	deriveKeyToRSA      bool
+	deriveKeyToDKIM     bool
+	deriveKeyOutput     string
+	deriveKeyBits       int
+	deriveKeyDKIMSelector string
+	deriveKeyDKIMDomain   string
 
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
@@ -102,7 +105,9 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --polyseed-year 2024
   seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
   cat ~/.ssh/id_ed25519 | seedify --words 18
-  seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived`,
+  seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived
+  seedify ~/.ssh/id_ed25519 --to-dkim --output /etc/opendkim/keys/mail.private
+  seedify ~/.ssh/id_ed25519 --to-dkim --dkim-selector mail --dkim-domain example.com --output /etc/opendkim/keys/mail.private`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -122,12 +127,17 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
-			if deriveKeyToRSA {
-				return runDeriveKey(keyPath)
-			}
+		// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
+		if deriveKeyToRSA {
+			return runDeriveKey(keyPath)
+		}
 
-			// --publish requires --zenprofile
+		// Handle --to-dkim: derive a DKIM RSA keypair and write private key to disk (or stdout).
+		if deriveKeyToDKIM {
+			return runDeriveDKIMKey(keyPath)
+		}
+
+		// --publish requires --zenprofile
 			if publishRelays != "" && !zenprofile {
 				return errors.New("--publish requires --zenprofile")
 			}
@@ -421,8 +431,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.identifier", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
-	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa)")
-	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa") //nolint:mnd
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa or --to-dkim)")
+	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa or --to-dkim") //nolint:mnd
+	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMSelector, "dkim-selector", "mail", "DKIM selector name for the DNS TXT record (used with --to-dkim)")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMDomain, "dkim-domain", "", "Domain for the DKIM DNS TXT record label, e.g. example.com (used with --to-dkim)")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -552,6 +565,102 @@ func runDeriveKey(keyPath string) error {
 	fmt.Fprintf(os.Stderr, "\nWARNING: The derived key is cryptographically linked to its source key.\n")
 	fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
 	fmt.Fprintf(os.Stderr, "Derived key written to: %s\n", deriveKeyOutput)
+
+	return nil
+}
+
+// runDeriveDKIMKey handles --to-dkim: derives a DKIM RSA keypair from the source
+// Ed25519 key, writes the PKCS#8 private key to --output (or stdout after
+// confirmation), and prints the DNS TXT record value to stderr.
+//
+// Unlike --to-rsa, the private key is written without a passphrase. DKIM private
+// keys are conventionally stored unencrypted and protected only by filesystem
+// permissions; mail server daemons (OpenDKIM, rspamd, Postfix milter) read them
+// at startup without any interactive passphrase prompt.
+//
+//nolint:funlen
+func runDeriveDKIMKey(keyPath string) error {
+	// Read and parse the source key.
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	fmt.Fprintf(os.Stderr, "Deriving %d-bit RSA keypair for DKIM (this may take a moment)...\n", deriveKeyBits)
+
+	dkimKeys, deriveErr := seedify.DeriveDKIMKeypair(ed25519Key, deriveKeyDKIMSelector, deriveKeyBits)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive DKIM keypair: %w", deriveErr)
+	}
+
+	// Write or print the private key (no passphrase — DKIM convention).
+	if deriveKeyOutput == "" {
+		confirmed, confirmErr := confirmPrintToConsole()
+		if confirmErr != nil {
+			return fmt.Errorf("could not read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return errors.New("aborted: use --output <path> to write the DKIM private key to a file")
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived DKIM key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Print(string(dkimKeys.PrivateKeyPEM))
+	} else {
+		if writeErr := os.WriteFile(deriveKeyOutput, dkimKeys.PrivateKeyPEM, 0o600); writeErr != nil { //nolint:mnd
+			return fmt.Errorf("could not write DKIM private key to %s: %w", deriveKeyOutput, writeErr)
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived DKIM key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Fprintf(os.Stderr, "DKIM private key written to: %s\n", deriveKeyOutput)
+	}
+
+	// Print DNS TXT record instructions to stderr so only the private key
+	// appears on stdout when the user pipes the output.
+	selector := deriveKeyDKIMSelector
+	domain := deriveKeyDKIMDomain
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "DNS TXT record for DKIM:")
+
+	if domain != "" {
+		fmt.Fprintf(os.Stderr, "  Name:  %s._domainkey.%s\n", selector, domain)
+	} else {
+		fmt.Fprintf(os.Stderr, "  Name:  %s._domainkey.<your-domain>\n", selector)
+	}
+
+	fmt.Fprintf(os.Stderr, "  Value: %s\n", dkimKeys.DNSTXTRecord)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Note: some DNS providers require TXT record values to be split into")
+	fmt.Fprintln(os.Stderr, "      255-character chunks. Check your provider's documentation if")
+	fmt.Fprintln(os.Stderr, "      the record is rejected. For a 4096-bit key the value is ~736")
+	fmt.Fprintln(os.Stderr, "      characters; for 2048-bit it is ~392 characters.")
 
 	return nil
 }
