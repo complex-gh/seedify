@@ -13,9 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -682,35 +680,6 @@ func getDefaultSSHDir() (string, error) {
 	return filepath.Join(homeDir, ".ssh"), nil
 }
 
-// getSSHKeygenCommand returns the appropriate ssh-keygen command name for the platform.
-// On Windows, this is "ssh-keygen.exe", on other platforms it's "ssh-keygen".
-func getSSHKeygenCommand() string {
-	if runtime.GOOS == "windows" {
-		return "ssh-keygen.exe"
-	}
-	return "ssh-keygen"
-}
-
-// generateKeyWithSSHKeygen uses ssh-keygen to generate a new ed25519 key at the specified path.
-// It runs "ssh-keygen -t ed25519 -f <path>" interactively so the user can set a passphrase.
-// Returns an error if the key generation fails.
-func generateKeyWithSSHKeygen(keyPath string) error {
-	cmdName := getSSHKeygenCommand()
-	// Run interactively without -N flag so user can set a passphrase
-	// Without -q flag so user can see prompts and confirmations
-	// Using context.Background() since this is an interactive command with no timeout
-	// G204: cmdName is controlled (only "ssh-keygen" or "ssh-keygen.exe")
-	cmd := exec.CommandContext(context.Background(), cmdName, "-t", "ed25519", "-f", keyPath) //nolint:gosec
-	// Connect stdin, stdout, and stderr to allow full interaction
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to generate key with %s: %w", cmdName, err)
-	}
-	return nil
-}
 
 // resolveKeyPath attempts to resolve a key path. If the path doesn't exist
 // and appears to be just a filename (no directory separators), it will check
@@ -762,14 +731,8 @@ func resolveKeyPath(path string) (string, error) {
 		return defaultPath, nil
 	}
 
-	// As a last fallback, try using ssh-keygen to generate the key
-	// This will create a new ed25519 key at the default SSH directory path
-	if err := generateKeyWithSSHKeygen(defaultPath); err != nil {
-		return "", fmt.Errorf("could not open %s: file not found in current directory or %s, and failed to generate key with %s: %w", path, sshDir, getSSHKeygenCommand(), err)
-	}
-
-	// Key was successfully generated, return the path
-	return defaultPath, nil
+	// Key not found — exit with a warning rather than attempting to generate one
+	return "", fmt.Errorf("warning: key not found: %s does not exist in the current directory or %s", path, sshDir)
 }
 
 func openFileOrStdin(path string) (*os.File, error) {
