@@ -826,9 +826,8 @@ func printPEMPhrase(label string, phrase string) {
 //  1. 12-word BIP39 seed phrase
 //  2. 16-word Polyseed seed phrase
 //  3. 24-word BIP39 seed phrase
-//  4. 24-word wallet seed phrase (wallet-prefixed)
-//  5. 24-word vault seed phrase (vault-prefixed)
-//  6. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
+//  4. Nostr keys derived from the 24-word mnemonic (NIP-06 path)
+//  5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
 //
 //nolint:funlen
 func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
@@ -901,7 +900,21 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 	fmt.Print("\n\n")
 	printPEMPhrase("24-WORD SEED PHRASE (charmbracelet/MELT)", mnemonic24)
 
-	// 4. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
+	// 4. Nostr keys derived from the 24-word mnemonic (NIP-06 path)
+	nostrKeys, err := seedify.DeriveNostrKeysWithHex(mnemonic24, "")
+	if err != nil {
+		return fmt.Errorf("could not derive Nostr keys from 24-word mnemonic: %w", err)
+	}
+	// 2 empty lines between outputs
+	fmt.Print("\n\n")
+	fmt.Println("----- nPubKey / hexPubKey / nSecKey / hexSecKey -----")
+	fmt.Println(nostrKeys.Npub)
+	fmt.Println(nostrKeys.PubKeyHex)
+	fmt.Println(nostrKeys.Nsec)
+	fmt.Println(nostrKeys.PrivKeyHex)
+	fmt.Println("----- nPubKey / hexPubKey / nSecKey / hexSecKey -----")
+
+	// 5. Brave 25-word seed phrase (24 brave-prefixed words + 25th word)
 	braveMnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
 	if err != nil {
 		return fmt.Errorf("could not generate brave 25-word mnemonic: %w", err)
