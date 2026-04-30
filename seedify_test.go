@@ -6,6 +6,9 @@ package seedify
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"strings"
 	"testing"
 
@@ -943,4 +946,462 @@ func TestBitcoinMasterExtendedKeys_KnownVector(t *testing.T) {
 	// Verify master xpub matches expected (if known)
 	// Note: This test may need adjustment based on the actual expected value
 	_ = expectedMasterXpub // Placeholder - verify with external tool if needed
+}
+
+// TestRSASeedBytes_Deterministic verifies that RSASeedBytes always returns the
+// same 32-byte value for the same RSA key.
+func TestRSASeedBytes_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	seed1, err := RSASeedBytes(key)
+	is.NoErr(err)
+	is.Equal(len(seed1), 32) //nolint:mnd
+
+	seed2, err := RSASeedBytes(key)
+	is.NoErr(err)
+
+	is.Equal(seed1, seed2)
+}
+
+// TestRSASeedBytes_DifferentKeysProduceDifferentSeeds verifies that two distinct
+// RSA keys yield different 32-byte seeds.
+func TestRSASeedBytes_DifferentKeysProduceDifferentSeeds(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	seed1, err := RSASeedBytes(key1)
+	is.NoErr(err)
+
+	seed2, err := RSASeedBytes(key2)
+	is.NoErr(err)
+
+	// Two independently generated RSA keys must not share the same seed.
+	isDifferent := false
+	for i := range seed1 {
+		if seed1[i] != seed2[i] {
+			isDifferent = true
+			break
+		}
+	}
+	is.True(isDifferent)
+}
+
+// TestRSASeedBytes_InsufficientPrimes verifies that an RSA key with fewer than
+// two prime factors returns an error.
+func TestRSASeedBytes_InsufficientPrimes(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Artificially strip all prime factors to trigger the validation path.
+	key.Primes = nil
+
+	_, err = RSASeedBytes(key)
+	is.True(err != nil)
+}
+
+// TestToMnemonicWithLengthFromRSA_AllFormats verifies that all valid word counts
+// produce correctly-sized mnemonics when driven by an RSA key.
+func TestToMnemonicWithLengthFromRSA_AllFormats(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	validCounts := []int{12, 15, 16, 18, 21, 24}
+
+	for _, count := range validCounts {
+		t.Run(string(rune(count)), func(t *testing.T) {
+			is := is.New(t)
+			mnemonic, mnErr := ToMnemonicWithLengthFromRSA(key, count, "", false, PolyseedDefaultBirthday)
+			is.NoErr(mnErr)
+			is.True(mnemonic != "")
+
+			words := strings.Fields(mnemonic)
+			is.Equal(len(words), count)
+		})
+	}
+}
+
+// TestToMnemonicWithLengthFromRSA_Deterministic verifies that repeated calls with
+// the same RSA key and passphrase always produce the same mnemonic.
+func TestToMnemonicWithLengthFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	mnemonic1, err := ToMnemonicWithLengthFromRSA(key, 24, "test-passphrase", false, 0)
+	is.NoErr(err)
+
+	mnemonic2, err := ToMnemonicWithLengthFromRSA(key, 24, "test-passphrase", false, 0)
+	is.NoErr(err)
+
+	is.Equal(mnemonic1, mnemonic2)
+}
+
+// TestToMnemonicWithLengthFromRSA_DifferentFromEd25519 verifies that an RSA key
+// and an Ed25519 key do not accidentally produce the same mnemonic.
+func TestToMnemonicWithLengthFromRSA_DifferentFromEd25519(t *testing.T) {
+	is := is.New(t)
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	_, ed25519Key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	rsaMnemonic, err := ToMnemonicWithLengthFromRSA(rsaKey, 24, "", false, 0)
+	is.NoErr(err)
+
+	ed25519Mnemonic, err := ToMnemonicWithLength(&ed25519Key, 24, "", false, 0)
+	is.NoErr(err)
+
+	is.True(rsaMnemonic != ed25519Mnemonic)
+}
+
+// TestToMnemonicWithBraveSyncFromRSA verifies that the RSA Brave Sync mnemonic
+// is 25 words and is reproducible within the same calendar day.
+func TestToMnemonicWithBraveSyncFromRSA(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	mnemonic, err := ToMnemonicWithBraveSyncFromRSA(key, "")
+	is.NoErr(err)
+	is.True(mnemonic != "")
+
+	words := strings.Fields(mnemonic)
+	is.Equal(len(words), 25) //nolint:mnd
+}
+
+// TestDeriveNostrKeysFromRSA_ValidFormat verifies that DeriveNostrKeysFromRSA
+// returns properly formatted npub/nsec bech32 keys.
+func TestDeriveNostrKeysFromRSA_ValidFormat(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub, nsec, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	is.True(strings.HasPrefix(npub, "npub1"))
+	is.True(strings.HasPrefix(nsec, "nsec1"))
+}
+
+// TestDeriveNostrKeysFromRSA_Deterministic verifies that the same RSA key always
+// produces the same Nostr key pair.
+func TestDeriveNostrKeysFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub1, nsec1, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	npub2, nsec2, err := DeriveNostrKeysFromRSA(key)
+	is.NoErr(err)
+
+	is.Equal(npub1, npub2)
+	is.Equal(nsec1, nsec2)
+}
+
+// TestDeriveNostrKeysFromRSA_DifferentKeysProduceDifferentResults verifies that
+// two distinct RSA keys yield different Nostr key pairs.
+func TestDeriveNostrKeysFromRSA_DifferentKeysProduceDifferentResults(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	npub1, _, err := DeriveNostrKeysFromRSA(key1)
+	is.NoErr(err)
+
+	npub2, _, err := DeriveNostrKeysFromRSA(key2)
+	is.NoErr(err)
+
+	is.True(npub1 != npub2)
+}
+
+// TestDeriveEd25519KeyFromRSA_Deterministic verifies that the same RSA key always
+// produces the same Ed25519 private key.
+func TestDeriveEd25519KeyFromRSA_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived1, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	derived2, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	is.Equal(derived1, derived2)
+}
+
+// TestDeriveEd25519KeyFromRSA_DifferentKeys verifies that distinct RSA keys produce
+// distinct Ed25519 keys.
+func TestDeriveEd25519KeyFromRSA_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	key1, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	key2, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived1, err := DeriveEd25519KeyFromRSA(key1)
+	is.NoErr(err)
+
+	derived2, err := DeriveEd25519KeyFromRSA(key2)
+	is.NoErr(err)
+
+	is.True(string(derived1) != string(derived2))
+}
+
+// TestDeriveEd25519KeyFromRSA_ValidKey verifies that the derived Ed25519 key has
+// the expected 64-byte length and a valid public key component.
+func TestDeriveEd25519KeyFromRSA_ValidKey(t *testing.T) {
+	is := is.New(t)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived, err := DeriveEd25519KeyFromRSA(key)
+	is.NoErr(err)
+
+	// ed25519.PrivateKey is 64 bytes (32-byte seed + 32-byte public key).
+	is.Equal(len(derived), ed25519.PrivateKeySize)
+	// Public() must return a non-nil ed25519.PublicKey of the correct length.
+	pub, ok := derived.Public().(ed25519.PublicKey)
+	is.True(ok)
+	is.Equal(len(pub), ed25519.PublicKeySize)
+}
+
+// TestDeriveRSAKeyFromEd25519_Deterministic verifies that the same Ed25519 key and
+// bit size always produce the same RSA key.
+func TestDeriveRSAKeyFromEd25519_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived1, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived2, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Compare the modulus N — equal moduli mean equal keys.
+	is.Equal(derived1.N.Cmp(derived2.N), 0)
+}
+
+// TestDeriveRSAKeyFromEd25519_DifferentKeys verifies that distinct Ed25519 keys
+// produce distinct RSA keys.
+func TestDeriveRSAKeyFromEd25519_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	_, key1, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	_, key2, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived1, err := DeriveRSAKeyFromEd25519(&key1, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	derived2, err := DeriveRSAKeyFromEd25519(&key2, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(derived1.N.Cmp(derived2.N) != 0)
+}
+
+// TestDeriveRSAKeyFromEd25519_ValidKey verifies that the derived RSA key passes
+// Go's internal consistency checks.
+func TestDeriveRSAKeyFromEd25519_ValidKey(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	derived, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.NoErr(derived.Validate())
+}
+
+// TestDeriveRSAKeyFromEd25519_InvalidBits verifies that unsupported bit sizes
+// return an error rather than silently producing a key.
+func TestDeriveRSAKeyFromEd25519_InvalidBits(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	for _, bits := range []int{0, 1024, 1500, 8192} {
+		_, bitsErr := DeriveRSAKeyFromEd25519(&key, bits)
+		is.True(bitsErr != nil)
+	}
+}
+
+// TestDeriveDKIMKeypair_Deterministic verifies that the same Ed25519 key,
+// selector, and bit size always produce the same DKIM keypair.
+func TestDeriveDKIMKeypair_Deterministic(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.Equal(string(kp1.PrivateKeyPEM), string(kp2.PrivateKeyPEM))
+	is.Equal(kp1.DNSTXTRecord, kp2.DNSTXTRecord)
+	is.Equal(kp1.PublicKeyBase64, kp2.PublicKeyBase64)
+}
+
+// TestDeriveDKIMKeypair_DifferentKeys verifies that distinct Ed25519 keys produce
+// distinct DKIM keypairs even when the selector is identical.
+func TestDeriveDKIMKeypair_DifferentKeys(t *testing.T) {
+	is := is.New(t)
+
+	_, key1, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	_, key2, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key1, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key2, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(string(kp1.PrivateKeyPEM) != string(kp2.PrivateKeyPEM))
+	is.True(kp1.DNSTXTRecord != kp2.DNSTXTRecord)
+}
+
+// TestDeriveDKIMKeypair_DifferentSelectors verifies that the same Ed25519 key
+// with different selectors produces completely different RSA keypairs, enabling
+// selector-based key rotation from a single source key.
+func TestDeriveDKIMKeypair_DifferentSelectors(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp1, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	kp2, err := DeriveDKIMKeypair(&key, "mail2026", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(string(kp1.PrivateKeyPEM) != string(kp2.PrivateKeyPEM))
+	is.True(kp1.DNSTXTRecord != kp2.DNSTXTRecord)
+}
+
+// TestDeriveDKIMKeypair_SelectorIsolatesFromRSA verifies that DeriveDKIMKeypair
+// produces a different key than DeriveRSAKeyFromEd25519 for the same source key,
+// since the two use distinct domain-separation labels.
+func TestDeriveDKIMKeypair_SelectorIsolatesFromRSA(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	rsaKey, err := DeriveRSAKeyFromEd25519(&key, 2048) //nolint:mnd
+	is.NoErr(err)
+
+	dkimKP, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Parse the DKIM private key back to RSA for comparison.
+	block, _ := pem.Decode(dkimKP.PrivateKeyPEM)
+	is.True(block != nil)
+	parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+	is.NoErr(parseErr)
+	dkimRSAKey, ok := parsed.(*rsa.PrivateKey)
+	is.True(ok)
+
+	// The moduli must differ — they are derived from different labels.
+	is.True(rsaKey.N.Cmp(dkimRSAKey.N) != 0)
+}
+
+// TestDeriveDKIMKeypair_PrivateKeyIsPKCS8PEM verifies that the private key is a
+// valid PKCS#8 PEM block with the expected header and contains a valid RSA key.
+func TestDeriveDKIMKeypair_PrivateKeyIsPKCS8PEM(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	// Decode the PEM block and verify its type header.
+	block, rest := pem.Decode(kp.PrivateKeyPEM)
+	is.True(block != nil)
+	is.Equal(len(rest), 0)
+	is.Equal(block.Type, "PRIVATE KEY")
+
+	// Parse the DER bytes as a PKCS#8 private key and assert it is RSA.
+	parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+	is.NoErr(parseErr)
+
+	rsaKey, ok := parsed.(*rsa.PrivateKey)
+	is.True(ok)
+	is.NoErr(rsaKey.Validate())
+	is.Equal(rsaKey.N.BitLen(), 2048) //nolint:mnd
+}
+
+// TestDeriveDKIMKeypair_DNSTXTRecord verifies that the DNS TXT record value has
+// the expected v=DKIM1; k=rsa; p= prefix and a non-empty base64 public key.
+func TestDeriveDKIMKeypair_DNSTXTRecord(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	kp, err := DeriveDKIMKeypair(&key, "mail", 2048) //nolint:mnd
+	is.NoErr(err)
+
+	is.True(strings.HasPrefix(kp.DNSTXTRecord, "v=DKIM1; k=rsa; p="))
+	is.True(len(kp.PublicKeyBase64) > 0)
+
+	// The DNS TXT record must contain the same base64 value as PublicKeyBase64.
+	expected := "v=DKIM1; k=rsa; p=" + kp.PublicKeyBase64
+	is.Equal(kp.DNSTXTRecord, expected)
+}
+
+// TestDeriveDKIMKeypair_InvalidBits verifies that unsupported bit sizes return
+// an error and do not produce a keypair.
+func TestDeriveDKIMKeypair_InvalidBits(t *testing.T) {
+	is := is.New(t)
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	is.NoErr(err)
+
+	for _, bits := range []int{0, 1024, 1500, 8192} {
+		_, bitsErr := DeriveDKIMKeypair(&key, "mail", bits)
+		is.True(bitsErr != nil)
+	}
 }

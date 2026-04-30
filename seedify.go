@@ -11,14 +11,22 @@
 package seedify
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"math"
+	"math/big"
 	"strings"
 	"time"
 
@@ -70,6 +78,299 @@ var entropySizeMap = map[int]int{
 	18: 24, // 192 bits
 	21: 28, // 224 bits
 	24: 32, // 256 bits
+}
+
+// RSASeedBytes derives a deterministic 32-byte seed from an RSA private key by
+// hashing the two secret prime factors with SHA-256: SHA256(P || Q).
+// P and Q are the root secrets of an RSA key pair — all other components
+// (N, D, Dp, Dq, Qinv) are derived from them.
+//
+// Returns an error if the key does not have at least two prime factors.
+func RSASeedBytes(key *rsa.PrivateKey) ([]byte, error) {
+	if len(key.Primes) < 2 { //nolint:mnd
+		return nil, fmt.Errorf("RSA key must have at least two prime factors, got %d", len(key.Primes))
+	}
+
+	p := key.Primes[0].Bytes()
+	q := key.Primes[1].Bytes()
+
+	combined := make([]byte, len(p)+len(q))
+	copy(combined, p)
+	copy(combined[len(p):], q)
+
+	hash := sha256.Sum256(combined)
+
+	return hash[:], nil
+}
+
+// deterministicPrime generates a prime of exactly the given bit length using only
+// the provided io.Reader for randomness. It sets the two highest bits to guarantee
+// that two such primes multiplied together produce a product of exactly 2×bits
+// bits, and sets the lowest bit to ensure the candidate is odd.
+//
+// Primality is tested with big.Int.ProbablyPrime(0), which applies the
+// deterministic Baillie-PSW test and has no known false positives. This avoids
+// the non-determinism introduced by big.Int.ProbablyPrime(n>0), which draws
+// random Miller-Rabin witnesses from crypto/rand.Reader regardless of the
+// caller-provided reader.
+func deterministicPrime(prng io.Reader, bits int) (*big.Int, error) {
+	if bits < 2 { //nolint:mnd
+		return nil, fmt.Errorf("prime size must be at least 2 bits, got %d", bits)
+	}
+
+	b := make([]byte, (bits+7)/8) //nolint:mnd
+	for {
+		if _, err := io.ReadFull(prng, b); err != nil {
+			return nil, fmt.Errorf("could not read random bytes: %w", err)
+		}
+
+		p := new(big.Int).SetBytes(b)
+
+		// Mask to exactly `bits` bits.
+		mask := new(big.Int).Lsh(big.NewInt(1), uint(bits))
+		mask.Sub(mask, big.NewInt(1))
+		p.And(p, mask)
+
+		// Set the two highest bits so that the product of two such primes has
+		// exactly 2×bits bits — identical to the guarantee from crypto/rand.Prime.
+		p.SetBit(p, bits-1, 1)
+		p.SetBit(p, bits-2, 1) //nolint:mnd
+
+		// Ensure the candidate is odd.
+		p.SetBit(p, 0, 1)
+
+		if p.BitLen() == bits && p.ProbablyPrime(0) {
+			return p, nil
+		}
+	}
+}
+
+// deterministicReader is an io.Reader backed by an AES-256-CTR stream cipher.
+// It produces an infinite, reproducible byte stream from a fixed 32-byte seed,
+// making it suitable for deterministic cryptographic key generation.
+type deterministicReader struct {
+	stream cipher.Stream
+}
+
+// Read fills p with deterministic pseudo-random bytes from the AES-CTR stream.
+func (r *deterministicReader) Read(p []byte) (int, error) {
+	// XOR a zero buffer with the stream to produce the keystream bytes.
+	for i := range p {
+		p[i] = 0
+	}
+	r.stream.XORKeyStream(p, p)
+	return len(p), nil
+}
+
+// newDeterministicReader constructs a deterministicReader using the given 32-byte
+// seed as an AES-256 key. The IV is all-zero; the seed must be domain-separated
+// by the caller before passing it in.
+func newDeterministicReader(seed []byte) (io.Reader, error) {
+	block, err := aes.NewCipher(seed)
+	if err != nil {
+		return nil, fmt.Errorf("could not create AES cipher: %w", err)
+	}
+	var iv [aes.BlockSize]byte
+	stream := cipher.NewCTR(block, iv[:])
+	return &deterministicReader{stream: stream}, nil
+}
+
+// DeriveEd25519KeyFromRSA deterministically derives an Ed25519 private key from
+// an RSA private key. The derivation uses RSASeedBytes (SHA256 of the prime
+// factors P and Q) as the Ed25519 seed, making the output stable for any given
+// RSA key.
+//
+// Security note: if the RSA key is compromised, the derived Ed25519 key is also
+// compromised. This is a one-way derivation; the original RSA key cannot be
+// recovered from the output.
+func DeriveEd25519KeyFromRSA(key *rsa.PrivateKey) (ed25519.PrivateKey, error) {
+	seed, err := RSASeedBytes(key)
+	if err != nil {
+		return nil, fmt.Errorf("could not extract seed from RSA key: %w", err)
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// validRSABits is the set of accepted RSA key sizes for DeriveRSAKeyFromEd25519.
+var validRSABits = map[int]struct{}{
+	2048: {},
+	3072: {},
+	4096: {},
+}
+
+// rsaPublicExponent is the standard RSA public exponent (2^16 + 1 = 65537).
+const rsaPublicExponent = 65537
+
+// deriveRSAKeyFromDomainHash generates an RSA private key of the given bit size
+// from a pre-computed 32-byte domain hash. The hash is used as the AES-256 seed
+// for a deterministic CTR-mode PRNG that drives prime generation.
+//
+// Callers are responsible for constructing a properly domain-separated hash
+// before passing it in; this function treats the bytes as opaque key material.
+// bits must be 2048, 3072, or 4096.
+func deriveRSAKeyFromDomainHash(domainHash [32]byte, bits int) (*rsa.PrivateKey, error) {
+	if _, ok := validRSABits[bits]; !ok {
+		return nil, fmt.Errorf("invalid RSA bit size %d: must be 2048, 3072, or 4096", bits)
+	}
+
+	prng, err := newDeterministicReader(domainHash[:])
+	if err != nil {
+		return nil, fmt.Errorf("could not create deterministic reader: %w", err)
+	}
+
+	// Generate P and Q as distinct primes from the deterministic stream.
+	// deterministicPrime uses ProbablyPrime(0) (Baillie-PSW) which is fully
+	// deterministic — unlike crypto/rand.Prime which calls ProbablyPrime(20)
+	// and draws random Miller-Rabin witnesses from crypto/rand.Reader.
+	halfBits := bits / 2 //nolint:mnd
+	p, err := deterministicPrime(prng, halfBits)
+	if err != nil {
+		return nil, fmt.Errorf("could not generate prime P: %w", err)
+	}
+
+	var q *big.Int
+	for {
+		q, err = deterministicPrime(prng, halfBits)
+		if err != nil {
+			return nil, fmt.Errorf("could not generate prime Q: %w", err)
+		}
+		if p.Cmp(q) != 0 {
+			break
+		}
+	}
+
+	// Compute the RSA key components.
+	one := big.NewInt(1)
+	n := new(big.Int).Mul(p, q)
+	pm1 := new(big.Int).Sub(p, one)
+	qm1 := new(big.Int).Sub(q, one)
+	phi := new(big.Int).Mul(pm1, qm1)
+
+	e := big.NewInt(rsaPublicExponent)
+	d := new(big.Int).ModInverse(e, phi)
+	if d == nil {
+		return nil, fmt.Errorf("could not compute RSA private exponent: gcd(e, phi) != 1")
+	}
+
+	rsaKey := &rsa.PrivateKey{
+		PublicKey: rsa.PublicKey{
+			N: n,
+			E: rsaPublicExponent,
+		},
+		D:      d,
+		Primes: []*big.Int{p, q},
+	}
+	rsaKey.Precompute()
+
+	if err := rsaKey.Validate(); err != nil {
+		return nil, fmt.Errorf("derived RSA key failed validation: %w", err)
+	}
+
+	return rsaKey, nil
+}
+
+// DeriveRSAKeyFromEd25519 deterministically derives an RSA private key from an
+// Ed25519 private key. The derivation domain-separates the Ed25519 seed with
+// the label "seedify:rsa-from-ed25519:", hashes it with SHA-256 to produce a
+// 32-byte AES-256 key, and feeds an AES-256-CTR stream as the source of
+// randomness for prime generation. This ensures the same Ed25519 key and bit
+// size always produce the same RSA key.
+//
+// bits must be 2048, 3072, or 4096. 4096 is strongly recommended.
+// This function is computationally expensive because it involves prime search.
+//
+// Security note: if the Ed25519 key is compromised, the derived RSA key is also
+// compromised. This is a one-way derivation; the original Ed25519 key cannot be
+// recovered from the output.
+func DeriveRSAKeyFromEd25519(key *ed25519.PrivateKey, bits int) (*rsa.PrivateKey, error) {
+	// Domain-separate the Ed25519 seed before using it as an AES key so that
+	// the raw seed bytes are never directly exposed to the AES cipher.
+	label := []byte("seedify:rsa-from-ed25519:")
+	input := make([]byte, len(label)+len(key.Seed()))
+	copy(input, label)
+	copy(input[len(label):], key.Seed())
+
+	return deriveRSAKeyFromDomainHash(sha256.Sum256(input), bits)
+}
+
+// DKIMKeypair holds the formatted DKIM key material ready for use with a mail server.
+type DKIMKeypair struct {
+	// PrivateKeyPEM is the RSA private key encoded as a PKCS#8 PEM block
+	// ("-----BEGIN PRIVATE KEY-----"). This is the format expected by OpenDKIM,
+	// rspamd, Postfix, and Exim. DKIM private keys are stored without passphrase
+	// protection — secure the file with filesystem permissions (0600).
+	PrivateKeyPEM []byte
+
+	// DNSTXTRecord is the complete value for the DKIM selector DNS TXT record,
+	// ready to publish under <selector>._domainkey.<domain> in TXT format.
+	// Example: v=DKIM1; k=rsa; p=<base64-encoded-public-key>
+	DNSTXTRecord string
+
+	// PublicKeyBase64 is the base64-encoded DER-encoded SubjectPublicKeyInfo
+	// public key, without the surrounding v=DKIM1 wrapper. This is the raw
+	// value that goes in the p= field of the DNS TXT record.
+	PublicKeyBase64 string
+}
+
+// DeriveDKIMKeypair deterministically derives an RSA keypair from an Ed25519
+// private key and formats the output for immediate use with a DKIM-signing mail
+// server (OpenDKIM, rspamd, Postfix milter, Exim).
+//
+// The selector is mixed into the domain-separation label as
+// "seedify:dkim:<selector>:", so different selectors produce completely different
+// RSA keys from the same source Ed25519 key. This makes selector-based key
+// rotation possible without needing a new Ed25519 source key.
+//
+// The private key is marshalled as a PKCS#8 PEM block ("BEGIN PRIVATE KEY"), which
+// is the format most modern MTAs and DKIM libraries expect. No passphrase is
+// applied because DKIM private keys are conventionally stored unencrypted and
+// protected only by filesystem permissions (0600, root-owned).
+//
+// The public key is marshalled as a PKIX DER SubjectPublicKeyInfo structure,
+// base64-encoded, and wrapped in a v=DKIM1; k=rsa; p=<key> DNS TXT value ready
+// to paste into your DNS zone under <selector>._domainkey.<domain>.
+//
+// bits must be 2048, 3072, or 4096. 2048 bits is the current industry standard
+// for DKIM; 4096 produces a longer DNS TXT record that some providers may need
+// to split across multiple 255-byte strings.
+//
+// Security note: the derived DKIM key is cryptographically linked to the source
+// Ed25519 key. Compromising either key compromises both.
+func DeriveDKIMKeypair(key *ed25519.PrivateKey, selector string, bits int) (*DKIMKeypair, error) {
+	// Bind the selector into the domain-separation label so that each selector
+	// name produces a distinct RSA key from the same source Ed25519 key.
+	label := []byte("seedify:dkim:" + selector + ":")
+	input := make([]byte, len(label)+len(key.Seed()))
+	copy(input, label)
+	copy(input[len(label):], key.Seed())
+
+	rsaKey, err := deriveRSAKeyFromDomainHash(sha256.Sum256(input), bits)
+	if err != nil {
+		return nil, fmt.Errorf("could not derive RSA key for DKIM: %w", err)
+	}
+
+	// Marshal the private key as PKCS#8 DER, then wrap in a PEM block.
+	// OpenDKIM and most modern MTA DKIM implementations expect the "BEGIN PRIVATE KEY"
+	// header (PKCS#8), not the legacy "BEGIN RSA PRIVATE KEY" header (PKCS#1).
+	privDER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal DKIM private key: %w", err)
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+
+	// Marshal the public key as PKIX DER (SubjectPublicKeyInfo) and base64-encode
+	// it for the DNS TXT record p= field.
+	pubDER, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal DKIM public key: %w", err)
+	}
+	pubBase64 := base64.StdEncoding.EncodeToString(pubDER)
+
+	return &DKIMKeypair{
+		PrivateKeyPEM:   privPEM,
+		DNSTXTRecord:    fmt.Sprintf("v=DKIM1; k=rsa; p=%s", pubBase64),
+		PublicKeyBase64: pubBase64,
+	}, nil
 }
 
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create
@@ -155,9 +456,14 @@ func ToMnemonicWithLength(key *ed25519.PrivateKey, wordCount int, seedPassphrase
 //   - 21 words = 224 bits (28 bytes) - BIP39
 //   - 24 words = 256 bits (32 bytes) - BIP39
 func ToMnemonicWithPrefix(key *ed25519.PrivateKey, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
-	// Get the full seed (32 bytes)
-	fullSeed := key.Seed()
+	return toMnemonicFromSeedBytes(key.Seed(), wordCount, seedPassphrase, prefix, birthday)
+}
 
+// toMnemonicFromSeedBytes is the internal implementation shared by all mnemonic generation
+// functions regardless of key type. It accepts a raw 32-byte seed (extracted from the
+// key by the caller) and applies passphrase mixing, word-count prefixing, and hashing
+// before producing the final BIP-39 or Polyseed mnemonic.
+func toMnemonicFromSeedBytes(fullSeed []byte, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
 	// Combine with seed passphrase if provided
 	var combinedSeed []byte
 	if seedPassphrase != "" {
@@ -333,6 +639,49 @@ func ToMnemonicWithBraveSync(key *ed25519.PrivateKey, seedPassphrase string) (st
 	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
 }
 
+// ToMnemonicWithLengthFromRSA is the RSA analogue of ToMnemonicWithLength.
+// It extracts a 32-byte seed from the RSA private key via RSASeedBytes and
+// delegates to the same internal mnemonic pipeline.
+//
+// See ToMnemonicWithLength for parameter and word-count documentation.
+func ToMnemonicWithLengthFromRSA(key *rsa.PrivateKey, wordCount int, seedPassphrase string, brave bool, birthday uint64) (string, error) {
+	var prefix string
+	if brave {
+		prefix = "brave"
+	}
+	return ToMnemonicWithPrefixFromRSA(key, wordCount, seedPassphrase, prefix, birthday)
+}
+
+// ToMnemonicWithPrefixFromRSA is the RSA analogue of ToMnemonicWithPrefix.
+// It extracts a 32-byte seed from the RSA private key via RSASeedBytes and
+// delegates to the same internal mnemonic pipeline.
+//
+// See ToMnemonicWithPrefix for parameter and word-count documentation.
+func ToMnemonicWithPrefixFromRSA(key *rsa.PrivateKey, wordCount int, seedPassphrase string, prefix string, birthday uint64) (string, error) {
+	seed, err := RSASeedBytes(key)
+	if err != nil {
+		return "", fmt.Errorf("could not extract seed from RSA key: %w", err)
+	}
+	return toMnemonicFromSeedBytes(seed, wordCount, seedPassphrase, prefix, birthday)
+}
+
+// ToMnemonicWithBraveSyncFromRSA is the RSA analogue of ToMnemonicWithBraveSync.
+// It generates a 24-word mnemonic with the "brave" prefix from an RSA key and
+// appends the current day's 25th Brave Sync word.
+func ToMnemonicWithBraveSyncFromRSA(key *rsa.PrivateKey, seedPassphrase string) (string, error) {
+	mnemonic24, err := ToMnemonicWithLengthFromRSA(key, bip39MaxWordCount, seedPassphrase, true, 0)
+	if err != nil {
+		return "", fmt.Errorf("could not generate 24-word mnemonic: %w", err)
+	}
+
+	word25, err := BraveSync25thWord()
+	if err != nil {
+		return "", fmt.Errorf("could not get 25th word: %w", err)
+	}
+
+	return fmt.Sprintf("%s %s", mnemonic24, word25), nil
+}
+
 // NostrKeys contains all Nostr key formats derived from a mnemonic.
 type NostrKeys struct {
 	// Npub is the public key in bech32 format (starts with "npub1")
@@ -462,6 +811,44 @@ func DeriveNostrKeysFromEd25519(key *ed25519.PrivateKey) (npub string, nsec stri
 	publicKeyHex := hex.EncodeToString(publicKey)
 
 	// Encode keys to npub/nsec format using nip19 bech32 encoding
+	npub, err = nip19.EncodePublicKey(publicKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+
+	nsec, err = nip19.EncodePrivateKey(privateKeyHex)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to encode private key: %w", err)
+	}
+
+	return npub, nsec, nil
+}
+
+// DeriveNostrKeysFromRSA derives Nostr keys (npub/nsec) directly from an RSA private key.
+// A 32-byte seed is extracted via RSASeedBytes (SHA256 of the two prime factors P and Q),
+// then used as the secp256k1 private scalar to derive a valid Nostr key pair.
+//
+// Parameters:
+//   - key: An RSA private key (e.g., from an SSH key)
+//
+// Returns:
+//   - npub: The Nostr public key in bech32 format (starts with "npub1")
+//   - nsec: The Nostr private key in bech32 format (starts with "nsec1")
+//   - error: Any error that occurred during derivation
+func DeriveNostrKeysFromRSA(key *rsa.PrivateKey) (npub string, nsec string, err error) {
+	seed, seedErr := RSASeedBytes(key)
+	if seedErr != nil {
+		return "", "", fmt.Errorf("could not extract seed from RSA key: %w", seedErr)
+	}
+
+	privateKeyHex := hex.EncodeToString(seed)
+
+	// Derive the secp256k1 public key from the private scalar
+	publicKeyHex, pubErr := nostr.GetPublicKey(privateKeyHex)
+	if pubErr != nil {
+		return "", "", fmt.Errorf("failed to derive Nostr public key: %w", pubErr)
+	}
+
 	npub, err = nip19.EncodePublicKey(publicKeyHex)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to encode public key: %w", err)

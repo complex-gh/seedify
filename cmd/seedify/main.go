@@ -3,16 +3,17 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,14 @@ var (
 	zenprofileAppID string
 	polyseedYear    string
 
+	// derive-key flags.
+	deriveKeyToRSA        bool
+	deriveKeyToDKIM       bool
+	deriveKeyOutput       string
+	deriveKeyBits         int
+	deriveKeyDKIMSelector string
+	deriveKeyDKIMDomain   string
+
 	rootCmd = &cobra.Command{
 		Use:   "seedify <key-path>",
 		Short: "Generate a seed phrase from an SSH key",
@@ -93,7 +102,10 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --full
   seedify ~/.ssh/id_ed25519 --polyseed-year 2024
   seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
-  cat ~/.ssh/id_ed25519 | seedify --words 18`,
+  cat ~/.ssh/id_ed25519 | seedify --words 18
+  seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived
+  seedify ~/.ssh/id_ed25519 --to-dkim --output /etc/opendkim/keys/mail.private
+  seedify ~/.ssh/id_ed25519 --to-dkim --dkim-selector mail --dkim-domain example.com --output /etc/opendkim/keys/mail.private`,
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -111,6 +123,16 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			var keyPath string
 			if len(args) > 0 {
 				keyPath = args[0]
+			}
+
+			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
+			if deriveKeyToRSA {
+				return runDeriveKey(keyPath)
+			}
+
+			// Handle --to-dkim: derive a DKIM RSA keypair and write private key to disk (or stdout).
+			if deriveKeyToDKIM {
+				return runDeriveDKIMKey(keyPath)
 			}
 
 			// --publish requires --zenprofile
@@ -406,6 +428,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&publishRelays, "publish", "", "When used with --zenprofile: publish NIP-78 Kind 30078 event to these relays (comma-separated, e.g. relay.primal.net,relay.damus.io)")
 	rootCmd.PersistentFlags().StringVar(&zenprofileAppID, "zenprofile-app-id", "app.zenprofile.identifier", "When used with --zenprofile --publish: NIP-78 d tag value for the event identifier")
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa or --to-dkim)")
+	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa or --to-dkim") //nolint:mnd
+	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMSelector, "dkim-selector", "mail", "DKIM selector name for the DNS TXT record (used with --to-dkim)")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMDomain, "dkim-domain", "", "Domain for the DKIM DNS TXT record label, e.g. example.com (used with --to-dkim)")
 	rootCmd.AddCommand(manCmd)
 	rootCmd.AddCommand(braveSync25thCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -434,6 +462,207 @@ func birthdayFromYear(year int) uint64 {
 	return uint64(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()) //nolint:gosec
 }
 
+// runDeriveKey is the handler for the derive-key subcommand.
+// It parses the source key, derives a key of the requested type, prompts for
+// a passphrase, and writes the result as a passphrase-protected OpenSSH PEM file.
+//
+//nolint:funlen,cyclop
+func runDeriveKey(keyPath string) error {
+	// Read and parse the source key.
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	fmt.Fprintf(os.Stderr, "Deriving %d-bit RSA key (this may take a moment)...\n", deriveKeyBits)
+
+	rsaKey, deriveErr := seedify.DeriveRSAKeyFromEd25519(ed25519Key, deriveKeyBits)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive RSA key: %w", deriveErr)
+	}
+
+	var derivedKey crypto.PrivateKey = rsaKey
+
+	// Prompt for a passphrase to protect the output file.
+	fmt.Fprintf(os.Stderr, "Enter a passphrase for the derived key (cannot be empty): ")
+	outputPass, err := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("could not read passphrase: %w", err)
+	}
+	if len(outputPass) == 0 {
+		return errors.New("passphrase for derived key cannot be empty")
+	}
+
+	// Confirm the passphrase.
+	fmt.Fprintf(os.Stderr, "Confirm passphrase: ")
+	outputPassConfirm, err := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return fmt.Errorf("could not read passphrase confirmation: %w", err)
+	}
+	if string(outputPass) != string(outputPassConfirm) {
+		return errors.New("passphrases do not match")
+	}
+
+	// Serialise to OpenSSH PEM format with passphrase protection.
+	pemBlock, err := ssh.MarshalPrivateKeyWithPassphrase(derivedKey, "", outputPass)
+	if err != nil {
+		return fmt.Errorf("could not marshal derived key: %w", err)
+	}
+
+	pemBytes := pem.EncodeToMemory(pemBlock)
+
+	// If no --output path was given, warn the user and ask for confirmation before
+	// printing the private key to the console.
+	if deriveKeyOutput == "" {
+		confirmed, confirmErr := confirmPrintToConsole()
+		if confirmErr != nil {
+			return fmt.Errorf("could not read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return errors.New("aborted: use --output <path> to write the derived key to a file")
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Print(string(pemBytes))
+		return nil
+	}
+
+	// Write the PEM file with restrictive permissions (owner read/write only).
+	if err := os.WriteFile(deriveKeyOutput, pemBytes, 0o600); err != nil { //nolint:mnd
+		return fmt.Errorf("could not write derived key to %s: %w", deriveKeyOutput, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nWARNING: The derived key is cryptographically linked to its source key.\n")
+	fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+	fmt.Fprintf(os.Stderr, "Derived key written to: %s\n", deriveKeyOutput)
+
+	return nil
+}
+
+// runDeriveDKIMKey handles --to-dkim: derives a DKIM RSA keypair from the source
+// Ed25519 key, writes the PKCS#8 private key to --output (or stdout after
+// confirmation), and prints the DNS TXT record value to stderr.
+//
+// Unlike --to-rsa, the private key is written without a passphrase. DKIM private
+// keys are conventionally stored unencrypted and protected only by filesystem
+// permissions; mail server daemons (OpenDKIM, rspamd, Postfix milter) read them
+// at startup without any interactive passphrase prompt.
+//
+//nolint:funlen
+func runDeriveDKIMKey(keyPath string) error {
+	// Read and parse the source key.
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	fmt.Fprintf(os.Stderr, "Deriving %d-bit RSA keypair for DKIM (this may take a moment)...\n", deriveKeyBits)
+
+	dkimKeys, deriveErr := seedify.DeriveDKIMKeypair(ed25519Key, deriveKeyDKIMSelector, deriveKeyBits)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive DKIM keypair: %w", deriveErr)
+	}
+
+	// Write or print the private key (no passphrase — DKIM convention).
+	if deriveKeyOutput == "" {
+		confirmed, confirmErr := confirmPrintToConsole()
+		if confirmErr != nil {
+			return fmt.Errorf("could not read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return errors.New("aborted: use --output <path> to write the DKIM private key to a file")
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived DKIM key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Print(string(dkimKeys.PrivateKeyPEM))
+	} else {
+		if writeErr := os.WriteFile(deriveKeyOutput, dkimKeys.PrivateKeyPEM, 0o600); writeErr != nil { //nolint:mnd
+			return fmt.Errorf("could not write DKIM private key to %s: %w", deriveKeyOutput, writeErr)
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived DKIM key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Fprintf(os.Stderr, "DKIM private key written to: %s\n", deriveKeyOutput)
+	}
+
+	// Print DNS TXT record instructions to stderr so only the private key
+	// appears on stdout when the user pipes the output.
+	selector := deriveKeyDKIMSelector
+	domain := deriveKeyDKIMDomain
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "DNS TXT record for DKIM:")
+
+	if domain != "" {
+		fmt.Fprintf(os.Stderr, "  Name:  %s._domainkey.%s\n", selector, domain)
+	} else {
+		fmt.Fprintf(os.Stderr, "  Name:  %s._domainkey.<your-domain>\n", selector)
+	}
+
+	fmt.Fprintf(os.Stderr, "  Value: %s\n", dkimKeys.DNSTXTRecord)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Note: some DNS providers require TXT record values to be split into")
+	fmt.Fprintln(os.Stderr, "      255-character chunks. Check your provider's documentation if")
+	fmt.Fprintln(os.Stderr, "      the record is rejected. For a 4096-bit key the value is ~736")
+	fmt.Fprintln(os.Stderr, "      characters; for 2048-bit it is ~392 characters.")
+
+	return nil
+}
+
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -449,36 +678,6 @@ func getDefaultSSHDir() (string, error) {
 		return "", fmt.Errorf("could not get home directory: %w", err)
 	}
 	return filepath.Join(homeDir, ".ssh"), nil
-}
-
-// getSSHKeygenCommand returns the appropriate ssh-keygen command name for the platform.
-// On Windows, this is "ssh-keygen.exe", on other platforms it's "ssh-keygen".
-func getSSHKeygenCommand() string {
-	if runtime.GOOS == "windows" {
-		return "ssh-keygen.exe"
-	}
-	return "ssh-keygen"
-}
-
-// generateKeyWithSSHKeygen uses ssh-keygen to generate a new ed25519 key at the specified path.
-// It runs "ssh-keygen -t ed25519 -f <path>" interactively so the user can set a passphrase.
-// Returns an error if the key generation fails.
-func generateKeyWithSSHKeygen(keyPath string) error {
-	cmdName := getSSHKeygenCommand()
-	// Run interactively without -N flag so user can set a passphrase
-	// Without -q flag so user can see prompts and confirmations
-	// Using context.Background() since this is an interactive command with no timeout
-	// G204: cmdName is controlled (only "ssh-keygen" or "ssh-keygen.exe")
-	cmd := exec.CommandContext(context.Background(), cmdName, "-t", "ed25519", "-f", keyPath) //nolint:gosec
-	// Connect stdin, stdout, and stderr to allow full interaction
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to generate key with %s: %w", cmdName, err)
-	}
-	return nil
 }
 
 // resolveKeyPath attempts to resolve a key path. If the path doesn't exist
@@ -531,14 +730,8 @@ func resolveKeyPath(path string) (string, error) {
 		return defaultPath, nil
 	}
 
-	// As a last fallback, try using ssh-keygen to generate the key
-	// This will create a new ed25519 key at the default SSH directory path
-	if err := generateKeyWithSSHKeygen(defaultPath); err != nil {
-		return "", fmt.Errorf("could not open %s: file not found in current directory or %s, and failed to generate key with %s: %w", path, sshDir, getSSHKeygenCommand(), err)
-	}
-
-	// Key was successfully generated, return the path
-	return defaultPath, nil
+	// Key not found — exit with a warning rather than attempting to generate one
+	return "", fmt.Errorf("warning: key not found: %s does not exist in the current directory or %s", path, sshDir)
 }
 
 func openFileOrStdin(path string) (*os.File, error) {
@@ -607,17 +800,16 @@ func generateBraveSyncPhrase(path string, seedPassphrase string) (string, error)
 		return "", fmt.Errorf("could not parse key: %w", err)
 	}
 
-	switch key := key.(type) {
-	case *ed25519.PrivateKey:
-		// Generate 25-word mnemonic with Brave Sync
-		mnemonic, err := seedify.ToMnemonicWithBraveSync(key, seedPassphrase)
-		if err != nil {
-			return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
-		}
-		return mnemonic, nil
-	default:
-		return "", fmt.Errorf("unknown key type: %v", key)
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return "", unsupportedKeyTypeError(key)
 	}
+
+	mnemonic, err := seedify.ToMnemonicWithBraveSync(ed25519Key, seedPassphrase)
+	if err != nil {
+		return "", fmt.Errorf("could not generate Brave Sync mnemonic: %w", err)
+	}
+	return mnemonic, nil
 }
 
 // printPEMPhrase prints a seed phrase wrapped in PEM-style BEGIN/END markers.
@@ -672,7 +864,7 @@ func generatePhrasesOutput(keyPath string, seedPassphrase string) error {
 
 	ed25519Key, ok := key.(*ed25519.PrivateKey)
 	if !ok {
-		return fmt.Errorf("unknown key type: %v", key)
+		return unsupportedKeyTypeError(key)
 	}
 
 	// 1. 12-word seed phrase
@@ -773,7 +965,7 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 
 	ed25519Key, ok := key.(*ed25519.PrivateKey)
 	if !ok {
-		return fmt.Errorf("unknown key type: %v", key)
+		return unsupportedKeyTypeError(key)
 	}
 
 	// Generate non-polyseed mnemonics
@@ -933,6 +1125,16 @@ func generatePhrasesWithDerivations(keyPath string, seedPassphrase string, deriv
 func isPasswordError(err error) bool {
 	var kerr *ssh.PassphraseMissingError
 	return errors.As(err, &kerr)
+}
+
+// unsupportedKeyTypeError returns a consistent error for non-Ed25519 keys,
+// directing users to --to-rsa if they have an RSA key.
+func unsupportedKeyTypeError(key interface{}) error {
+	msg := fmt.Sprintf("only Ed25519 SSH keys are supported for seed phrase derivation (got %T)", key)
+	if _, ok := key.(*rsa.PrivateKey); ok {
+		msg += "\n\nTo derive an RSA key from an Ed25519 key, use --to-rsa.\nTo use an RSA key for derivation, first convert it: seedify <ed25519-key> --to-rsa --output <path>"
+	}
+	return errors.New(msg)
 }
 
 // isKeyPasswordProtected checks if an SSH key requires a password.
@@ -1107,7 +1309,7 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 
 	ed25519Key, ok := key.(*ed25519.PrivateKey)
 	if !ok {
-		return fmt.Errorf("unknown key type: %v", key)
+		return unsupportedKeyTypeError(key)
 	}
 
 	// Resolve polyseed years once before the loop
@@ -1427,6 +1629,28 @@ func askKeyPassphrase(path string) ([]byte, error) {
 	return readPassword(fmt.Sprintf("Enter the passphrase to unlock %q: ", path))
 }
 
+// confirmPrintToConsole warns the user that no --output path was provided and
+// asks whether they want to print the derived private key to the console.
+// It returns true only when the user explicitly presses 'y' or 'Y'.
+func confirmPrintToConsole() (bool, error) {
+	fmt.Fprintf(os.Stderr, "\nWARNING: No --output path provided. The derived private key will be printed to the console.\n")
+	fmt.Fprintf(os.Stderr, "Print private key to console? [y/N]: ")
+
+	t, err := tty.Open()
+	if err != nil {
+		return false, fmt.Errorf("could not open tty: %w", err)
+	}
+	defer t.Close() //nolint:errcheck
+
+	r, err := t.ReadRune()
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return false, fmt.Errorf("could not read response: %w", err)
+	}
+
+	return r == 'y' || r == 'Y', nil
+}
+
 // displayBitcoinOutput displays all Bitcoin derivations for a given mnemonic.
 // This includes addresses with private keys, extended keys, and multisig addresses.
 //
@@ -1608,10 +1832,13 @@ func displayBitcoinOutput(mnemonic string, wordCount int) error {
 
 // dnsRecord represents the JSON structure for DNS output.
 // Fields are ordered to match the expected DNS JSON format.
+// Exactly one of SSHEd25519 or SSHRSA will be populated per record, depending
+// on the input key type; the empty one is omitted from JSON output.
 //
 //nolint:govet
 type dnsRecord struct {
-	SSHEd25519    string `json:"ssh-ed25519"`
+	SSHEd25519    string `json:"ssh-ed25519,omitempty"`
+	SSHRSA        string `json:"ssh-rsa,omitempty"`
 	Nostr         string `json:"nostr"`
 	Npub          string `json:"npub"`
 	NpubKey       string `json:"npubkey"`
@@ -1661,6 +1888,7 @@ func dnsRecordToNIP78Tags(record dnsRecord, appID string) [][]string {
 	}
 	tags := [][]string{{"d", appID}}
 	addTag(&tags, "ssh-ed25519", record.SSHEd25519)
+	addTag(&tags, "ssh-rsa", record.SSHRSA)
 	addTag(&tags, "nostr", record.Nostr)
 	addTag(&tags, "npub", record.Npub)
 	addTag(&tags, "npubkey", record.NpubKey)
@@ -1758,14 +1986,15 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 
 	ed25519Key, ok := key.(*ed25519.PrivateKey)
 	if !ok {
-		return nil, nil, fmt.Errorf("unknown key type: %v", key)
+		return nil, nil, unsupportedKeyTypeError(key)
 	}
 
-	sshPubKey, err := ssh.NewPublicKey(ed25519Key.Public())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create SSH public key: %w", err)
+	// Encode SSH public key for the DNS record.
+	sshPubKey, pubErr := ssh.NewPublicKey(ed25519Key.Public())
+	if pubErr != nil {
+		return nil, nil, fmt.Errorf("failed to create SSH public key: %w", pubErr)
 	}
-	sshPubKeyBase64 := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
+	sshEd25519PubKey := base64.StdEncoding.EncodeToString(sshPubKey.Marshal())
 
 	mnemonic, err := seedify.ToMnemonicWithLength(ed25519Key, 24, seedPassphrase, false, 0) //nolint:mnd
 	if err != nil {
@@ -1857,7 +2086,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 
 	record := &dnsRecord{
-		SSHEd25519:    sshPubKeyBase64,
+		SSHEd25519:    sshEd25519PubKey,
 		Nostr:         nostrKeys.Npub,
 		Npub:          nostrKeys.Npub,
 		NpubKey:       nostrKeys.Npub,
