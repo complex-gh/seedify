@@ -64,11 +64,11 @@ var (
 	zenprofileAppID string
 	polyseedYear    string
 
-	// derive-key flags
-	deriveKeyToRSA      bool
-	deriveKeyToDKIM     bool
-	deriveKeyOutput     string
-	deriveKeyBits       int
+	// derive-key flags.
+	deriveKeyToRSA        bool
+	deriveKeyToDKIM       bool
+	deriveKeyOutput       string
+	deriveKeyBits         int
 	deriveKeyDKIMSelector string
 	deriveKeyDKIMDomain   string
 
@@ -125,17 +125,17 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-		// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
-		if deriveKeyToRSA {
-			return runDeriveKey(keyPath)
-		}
+			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
+			if deriveKeyToRSA {
+				return runDeriveKey(keyPath)
+			}
 
-		// Handle --to-dkim: derive a DKIM RSA keypair and write private key to disk (or stdout).
-		if deriveKeyToDKIM {
-			return runDeriveDKIMKey(keyPath)
-		}
+			// Handle --to-dkim: derive a DKIM RSA keypair and write private key to disk (or stdout).
+			if deriveKeyToDKIM {
+				return runDeriveDKIMKey(keyPath)
+			}
 
-		// --publish requires --zenprofile
+			// --publish requires --zenprofile
 			if publishRelays != "" && !zenprofile {
 				return errors.New("--publish requires --zenprofile")
 			}
@@ -679,7 +679,6 @@ func getDefaultSSHDir() (string, error) {
 	}
 	return filepath.Join(homeDir, ".ssh"), nil
 }
-
 
 // resolveKeyPath attempts to resolve a key path. If the path doesn't exist
 // and appears to be just a filename (no directory separators), it will check
@@ -1350,10 +1349,10 @@ func generateUnifiedOutput(keyPath string, wordCounts []int, seedPassphrase stri
 				}
 			}
 		} else {
-		mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, 0)
-		if mnErr != nil {
-			return fmt.Errorf("could not generate %d-word mnemonic: %w", count, mnErr)
-		}
+			mnemonic, mnErr := seedify.ToMnemonicWithLength(ed25519Key, count, seedPassphrase, false, 0)
+			if mnErr != nil {
+				return fmt.Errorf("could not generate %d-word mnemonic: %w", count, mnErr)
+			}
 
 			fmt.Printf("[%d word seed phrase]\n", count)
 			fmt.Println()
@@ -2087,7 +2086,7 @@ func generateDNSRecord(keyPath string, seedPassphrase string) (*dnsRecord, *seed
 	}
 
 	record := &dnsRecord{
-		SSHEd25519: sshEd25519PubKey,
+		SSHEd25519:    sshEd25519PubKey,
 		Nostr:         nostrKeys.Npub,
 		Npub:          nostrKeys.Npub,
 		NpubKey:       nostrKeys.Npub,
