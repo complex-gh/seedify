@@ -2,7 +2,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
@@ -17,6 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/complex-gh/seedify"
 	"github.com/mattn/go-isatty"
@@ -68,6 +73,9 @@ var (
 	deriveKeyToRSA        bool
 	deriveKeyToDKIM       bool
 	deriveKeyPKCS8        bool
+	deriveKeyToPGP        bool
+	deriveKeyPGPName      string
+	deriveKeyPGPEmail     string
 	deriveKeyOutput       string
 	deriveKeyBits         int
 	deriveKeyDKIMSelector string
@@ -132,6 +140,19 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return errors.New("--openssl-compatible requires --to-rsa")
 			}
 
+			// --to-pgp is mutually exclusive with --to-rsa and --to-dkim.
+			if deriveKeyToPGP && (deriveKeyToRSA || deriveKeyToDKIM) {
+				return errors.New("--to-pgp cannot be combined with --to-rsa or --to-dkim")
+			}
+
+			// --pgp-name and --pgp-email are both required when --to-pgp is set.
+			if deriveKeyToPGP && deriveKeyPGPName == "" {
+				return errors.New("--pgp-name is required with --to-pgp")
+			}
+			if deriveKeyToPGP && deriveKeyPGPEmail == "" {
+				return errors.New("--pgp-email is required with --to-pgp")
+			}
+
 			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
 			if deriveKeyToRSA {
 				return runDeriveKey(keyPath)
@@ -140,6 +161,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			// Handle --to-dkim: derive a DKIM RSA keypair and write private key to disk (or stdout).
 			if deriveKeyToDKIM {
 				return runDeriveDKIMKey(keyPath)
+			}
+
+			// Handle --to-pgp: derive an OpenPGP RSA keypair and write an ASCII-armored .asc file.
+			if deriveKeyToPGP {
+				return runDerivePGPKey(keyPath)
 			}
 
 			// --publish requires --zenprofile
@@ -438,8 +464,11 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyPKCS8, "openssl-compatible", false, "Write an encrypted PKCS#8 PEM file instead of OpenSSH format (used with --to-rsa; compatible with openssl pkey -check)")
-	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa or --to-dkim)")
-	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa or --to-dkim") //nolint:mnd
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToPGP, "to-pgp", false, "Derive an OpenPGP RSA keypair and write an ASCII-armored secret key (.asc) to --output")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyPGPName, "pgp-name", "", "Full name for the OpenPGP UID, e.g. Alice (used with --to-pgp)")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyPGPEmail, "pgp-email", "", "Email address for the OpenPGP UID, e.g. alice@example.com (used with --to-pgp)")
+	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa, --to-dkim, or --to-pgp)")
+	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa, --to-dkim, or --to-pgp") //nolint:mnd
 	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMSelector, "dkim-selector", "mail", "DKIM selector name for the DNS TXT record (used with --to-dkim)")
 	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMDomain, "dkim-domain", "", "Domain for the DKIM DNS TXT record label, e.g. example.com (used with --to-dkim)")
 	rootCmd.AddCommand(manCmd)
@@ -684,6 +713,201 @@ func runDeriveDKIMKey(keyPath string) error {
 	fmt.Fprintln(os.Stderr, "      255-character chunks. Check your provider's documentation if")
 	fmt.Fprintln(os.Stderr, "      the record is rejected. For a 4096-bit key the value is ~736")
 	fmt.Fprintln(os.Stderr, "      characters; for 2048-bit it is ~392 characters.")
+
+	return nil
+}
+
+// runDerivePGPKey handles --to-pgp: derives a primary RSA signing key and an
+// RSA encryption subkey from the source Ed25519 key, constructs a standard
+// OpenPGP entity (v4), protects all private key material with the user's
+// passphrase (S2K / AES-256-CFB), and writes an ASCII-armored secret key
+// block to --output (or stdout after confirmation).
+//
+// The output is a "-----BEGIN PGP PRIVATE KEY BLOCK-----" file importable
+// with `gpg --import`. After import GPG will show:
+//
+//	pub   rsa<bits> <date> [SC]
+//	uid           <name> <email>
+//	sub   rsa<bits> <date> [E]
+//
+// The creation timestamp is deterministic: it is derived from the primary
+// key's domain hash so that the same source Ed25519 key always produces the
+// same OpenPGP fingerprint regardless of when the command is run.
+//
+//nolint:funlen
+func runDerivePGPKey(keyPath string) error {
+	// Read and parse the source key.
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	fmt.Fprintf(os.Stderr, "Deriving %d-bit RSA keypair for PGP (this may take a moment)...\n", deriveKeyBits)
+
+	pgpPair, deriveErr := seedify.DerivePGPKeypair(ed25519Key, deriveKeyBits)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive PGP keypair: %w", deriveErr)
+	}
+
+	// Prompt for a passphrase to protect all private key material.
+	fmt.Fprintf(os.Stderr, "Enter a passphrase for the PGP key (cannot be empty): ")
+	outputPass, passErr := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if passErr != nil {
+		return fmt.Errorf("could not read passphrase: %w", passErr)
+	}
+	if len(outputPass) == 0 {
+		return errors.New("passphrase for PGP key cannot be empty")
+	}
+
+	fmt.Fprintf(os.Stderr, "Confirm passphrase: ")
+	outputPassConfirm, passConfirmErr := readPassword("")
+	fmt.Fprintln(os.Stderr)
+	if passConfirmErr != nil {
+		return fmt.Errorf("could not read passphrase confirmation: %w", passConfirmErr)
+	}
+	if string(outputPass) != string(outputPassConfirm) {
+		return errors.New("passphrases do not match")
+	}
+
+	// Build the primary key packet from the derived RSA key.
+	primaryPrivPkt := packet.NewRSAPrivateKey(pgpPair.CreationTime, pgpPair.PrimaryKey)
+
+	// Build the entity skeleton (no identities or subkeys yet).
+	entity := &openpgp.Entity{
+		PrimaryKey: &primaryPrivPkt.PublicKey,
+		PrivateKey: primaryPrivPkt,
+		Identities: make(map[string]*openpgp.Identity),
+		Subkeys:    []openpgp.Subkey{},
+		Signatures: []*packet.Signature{},
+	}
+
+	// Build the UID string ("Name <email>") and the positive-certification
+	// self-signature that binds it to the primary key.
+	uid := packet.NewUserId(deriveKeyPGPName, "", deriveKeyPGPEmail)
+	if uid == nil {
+		return errors.New("invalid PGP UID: name or email contains forbidden characters")
+	}
+	isPrimary := true
+	uidSig := &packet.Signature{
+		Version:           primaryPrivPkt.PublicKey.Version,
+		SigType:           packet.SigTypePositiveCert,
+		PubKeyAlgo:        primaryPrivPkt.PublicKey.PubKeyAlgo,
+		Hash:              crypto.SHA256,
+		CreationTime:      pgpPair.CreationTime,
+		IssuerKeyId:       &primaryPrivPkt.PublicKey.KeyId,
+		IssuerFingerprint: primaryPrivPkt.PublicKey.Fingerprint,
+		FlagsValid:        true,
+		FlagSign:          true,
+		FlagCertify:       true,
+		IsPrimaryId:       &isPrimary,
+	}
+	if uidErr := uidSig.SignUserId(uid.Id, &primaryPrivPkt.PublicKey, primaryPrivPkt, nil); uidErr != nil {
+		return fmt.Errorf("could not self-sign PGP UID: %w", uidErr)
+	}
+	entity.Identities[uid.Id] = &openpgp.Identity{
+		Name:          uid.Id,
+		UserId:        uid,
+		SelfSignature: uidSig,
+		Signatures:    []*packet.Signature{uidSig},
+	}
+
+	// Build the encryption subkey packet from the second derived RSA key.
+	encryptPrivPkt := packet.NewRSAPrivateKey(pgpPair.CreationTime, pgpPair.EncryptSubkey)
+	encryptPrivPkt.IsSubkey = true
+	encryptPrivPkt.PublicKey.IsSubkey = true
+
+	subkeySig := &packet.Signature{
+		Version:                    primaryPrivPkt.PublicKey.Version,
+		SigType:                    packet.SigTypeSubkeyBinding,
+		PubKeyAlgo:                 primaryPrivPkt.PublicKey.PubKeyAlgo,
+		Hash:                       crypto.SHA256,
+		CreationTime:               pgpPair.CreationTime,
+		IssuerKeyId:                &primaryPrivPkt.PublicKey.KeyId,
+		IssuerFingerprint:          primaryPrivPkt.PublicKey.Fingerprint,
+		FlagsValid:                 true,
+		FlagEncryptStorage:         true,
+		FlagEncryptCommunications:  true,
+	}
+	if subkeyErr := subkeySig.SignKey(&encryptPrivPkt.PublicKey, primaryPrivPkt, nil); subkeyErr != nil {
+		return fmt.Errorf("could not bind PGP encryption subkey: %w", subkeyErr)
+	}
+	entity.Subkeys = append(entity.Subkeys, openpgp.Subkey{
+		PublicKey:  &encryptPrivPkt.PublicKey,
+		PrivateKey: encryptPrivPkt,
+		Sig:        subkeySig,
+	})
+
+	// Encrypt all private key material with the user's passphrase before
+	// serializing. We use SerializePrivateWithoutSigning afterwards to avoid
+	// attempting to sign with the now-encrypted keys.
+	if encErr := entity.EncryptPrivateKeys(outputPass, nil); encErr != nil {
+		return fmt.Errorf("could not encrypt PGP private keys: %w", encErr)
+	}
+
+	// Serialize the entity into an ASCII-armored PGP PRIVATE KEY BLOCK.
+	var buf bytes.Buffer
+	armorWriter, armorErr := armor.Encode(&buf, openpgp.PrivateKeyType, nil)
+	if armorErr != nil {
+		return fmt.Errorf("could not create PGP armor writer: %w", armorErr)
+	}
+	if serErr := entity.SerializePrivateWithoutSigning(armorWriter, nil); serErr != nil {
+		return fmt.Errorf("could not serialize PGP key: %w", serErr)
+	}
+	if closeErr := armorWriter.Close(); closeErr != nil {
+		return fmt.Errorf("could not finalize PGP armor: %w", closeErr)
+	}
+	ascBytes := buf.Bytes()
+
+	// Write to --output or print to stdout (with confirmation guard).
+	if deriveKeyOutput == "" {
+		confirmed, confirmErr := confirmPrintToConsole()
+		if confirmErr != nil {
+			return fmt.Errorf("could not read confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return errors.New("aborted: use --output <path> to write the PGP key to a file")
+		}
+
+		fmt.Fprintf(os.Stderr, "\nWARNING: The derived PGP key is cryptographically linked to its source key.\n")
+		fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+		fmt.Print(string(ascBytes))
+		return nil
+	}
+
+	if writeErr := os.WriteFile(deriveKeyOutput, ascBytes, 0o600); writeErr != nil { //nolint:mnd
+		return fmt.Errorf("could not write PGP key to %s: %w", deriveKeyOutput, writeErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nWARNING: The derived PGP key is cryptographically linked to its source key.\n")
+	fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+	fmt.Fprintf(os.Stderr, "PGP key written to: %s\n", deriveKeyOutput)
+	fmt.Fprintf(os.Stderr, "Import with: gpg --import %s\n", deriveKeyOutput)
 
 	return nil
 }
