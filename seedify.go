@@ -373,6 +373,85 @@ func DeriveDKIMKeypair(key *ed25519.PrivateKey, selector string, bits int) (*DKI
 	}, nil
 }
 
+// pgpEpoch is the fixed creation timestamp stamped on all OpenPGP keys
+// derived by seedify. Using a well-known past date instead of a live
+// clock or a hash-derived value guarantees two properties simultaneously:
+//  1. Determinism: the same source Ed25519 key always produces the same
+//     OpenPGP fingerprint, regardless of when the command is run.
+//  2. GPG compatibility: GPG rejects keys with creation times in the future,
+//     so using a hash-derived timestamp risks rejection for some source keys.
+var pgpEpoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// PGPKeypair holds the two RSA keys needed to build a standard OpenPGP secret
+// key block: a primary key used for signing and certification ([SC]), and an
+// encryption subkey ([E]). Both are derived deterministically from the same
+// Ed25519 source key using distinct domain-separation labels.
+type PGPKeypair struct {
+	// PrimaryKey is the RSA private key for the OpenPGP primary key packet.
+	// It carries the [SC] (Sign + Certify) usage flags.
+	PrimaryKey *rsa.PrivateKey
+
+	// EncryptSubkey is the RSA private key for the OpenPGP encryption subkey
+	// packet. It carries the [E] (Encrypt) usage flag.
+	EncryptSubkey *rsa.PrivateKey
+
+	// CreationTime is the fixed seedify PGP epoch (2020-01-01 00:00:00 UTC).
+	// See pgpEpoch for the rationale behind using a constant rather than a
+	// hash-derived or live-clock value.
+	CreationTime time.Time
+}
+
+// DerivePGPKeypair deterministically derives a pair of RSA private keys from
+// an Ed25519 private key, intended for use as an OpenPGP primary key (signing /
+// certification) and encryption subkey.
+//
+// The two keys are derived with separate domain-separation labels:
+//   - Primary key: "seedify:pgp:primary:" + seed
+//   - Encryption subkey: "seedify:pgp:encrypt:" + seed
+//
+// This guarantees that the primary key and the encryption subkey are
+// cryptographically independent, even though they share the same source.
+//
+// The CreationTime field is derived deterministically from the first 4 bytes
+// of the primary domain hash, ensuring the OpenPGP fingerprint is stable
+// across invocations with the same source key.
+//
+// bits must be 2048, 3072, or 4096. 4096 is strongly recommended.
+//
+// Security note: if the source Ed25519 key is compromised, both derived RSA
+// keys are also compromised. This is a one-way derivation.
+func DerivePGPKeypair(key *ed25519.PrivateKey, bits int) (*PGPKeypair, error) {
+	// Derive the primary (signing/certifying) RSA key.
+	primaryLabel := []byte("seedify:pgp:primary:")
+	primaryInput := make([]byte, len(primaryLabel)+len(key.Seed()))
+	copy(primaryInput, primaryLabel)
+	copy(primaryInput[len(primaryLabel):], key.Seed())
+	primaryHash := sha256.Sum256(primaryInput)
+
+	primaryKey, err := deriveRSAKeyFromDomainHash(primaryHash, bits)
+	if err != nil {
+		return nil, fmt.Errorf("could not derive PGP primary key: %w", err)
+	}
+
+	// Derive the encryption subkey RSA key using a distinct label so it is
+	// independent of the primary key even though both share the same seed.
+	encryptLabel := []byte("seedify:pgp:encrypt:")
+	encryptInput := make([]byte, len(encryptLabel)+len(key.Seed()))
+	copy(encryptInput, encryptLabel)
+	copy(encryptInput[len(encryptLabel):], key.Seed())
+
+	encryptKey, err := deriveRSAKeyFromDomainHash(sha256.Sum256(encryptInput), bits)
+	if err != nil {
+		return nil, fmt.Errorf("could not derive PGP encryption subkey: %w", err)
+	}
+
+	return &PGPKeypair{
+		PrimaryKey:    primaryKey,
+		EncryptSubkey: encryptKey,
+		CreationTime:  pgpEpoch,
+	}, nil
+}
+
 // combineSeedPassphrase combines a seed passphrase with the SSH key seed to create
 // combined entropy. The passphrase is hashed with SHA256 to produce 32 bytes,
 // which are then XORed with the key seed to combine the entropy deterministically.
