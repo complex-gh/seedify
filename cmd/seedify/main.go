@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto"
 	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
@@ -29,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
+	"github.com/youmark/pkcs8"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 	lang "golang.org/x/text/language"
@@ -67,6 +67,7 @@ var (
 	// derive-key flags.
 	deriveKeyToRSA        bool
 	deriveKeyToDKIM       bool
+	deriveKeyPKCS8        bool
 	deriveKeyOutput       string
 	deriveKeyBits         int
 	deriveKeyDKIMSelector string
@@ -104,6 +105,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
   cat ~/.ssh/id_ed25519 | seedify --words 18
   seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived
+  seedify ~/.ssh/id_ed25519 --to-rsa --openssl-compatible --output ~/.ssh/id_rsa_derived.pem
   seedify ~/.ssh/id_ed25519 --to-dkim --output /etc/opendkim/keys/mail.private
   seedify ~/.ssh/id_ed25519 --to-dkim --dkim-selector mail --dkim-domain example.com --output /etc/opendkim/keys/mail.private`,
 		Args:         cobra.MaximumNArgs(1),
@@ -123,6 +125,11 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 			var keyPath string
 			if len(args) > 0 {
 				keyPath = args[0]
+			}
+
+			// --openssl-compatible is only meaningful alongside --to-rsa.
+			if deriveKeyPKCS8 && !deriveKeyToRSA {
+				return errors.New("--openssl-compatible requires --to-rsa")
 			}
 
 			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
@@ -430,6 +437,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyPKCS8, "openssl-compatible", false, "Write an encrypted PKCS#8 PEM file instead of OpenSSH format (used with --to-rsa; compatible with openssl pkey -check)")
 	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa or --to-dkim)")
 	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa or --to-dkim") //nolint:mnd
 	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMSelector, "dkim-selector", "mail", "DKIM selector name for the DNS TXT record (used with --to-dkim)")
@@ -462,9 +470,12 @@ func birthdayFromYear(year int) uint64 {
 	return uint64(time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()) //nolint:gosec
 }
 
-// runDeriveKey is the handler for the derive-key subcommand.
-// It parses the source key, derives a key of the requested type, prompts for
-// a passphrase, and writes the result as a passphrase-protected OpenSSH PEM file.
+// runDeriveKey is the handler for --to-rsa.
+// It parses the source Ed25519 key, derives an RSA key, prompts for a
+// passphrase, and writes the result as either:
+//   - an OpenSSH PEM file (default, passphrase-protected via bcrypt-pbkdf), or
+//   - an encrypted PKCS#8 PEM file when --openssl-compatible is set (PBES2/PBKDF2+AES-256-CBC,
+//     readable by `openssl pkey -check` and `openssl rsa -check`).
 //
 //nolint:funlen,cyclop
 func runDeriveKey(keyPath string) error {
@@ -506,8 +517,6 @@ func runDeriveKey(keyPath string) error {
 		return fmt.Errorf("could not derive RSA key: %w", deriveErr)
 	}
 
-	var derivedKey crypto.PrivateKey = rsaKey
-
 	// Prompt for a passphrase to protect the output file.
 	fmt.Fprintf(os.Stderr, "Enter a passphrase for the derived key (cannot be empty): ")
 	outputPass, err := readPassword("")
@@ -530,13 +539,29 @@ func runDeriveKey(keyPath string) error {
 		return errors.New("passphrases do not match")
 	}
 
-	// Serialise to OpenSSH PEM format with passphrase protection.
-	pemBlock, err := ssh.MarshalPrivateKeyWithPassphrase(derivedKey, "", outputPass)
-	if err != nil {
-		return fmt.Errorf("could not marshal derived key: %w", err)
-	}
+	var pemBytes []byte
 
-	pemBytes := pem.EncodeToMemory(pemBlock)
+	if deriveKeyPKCS8 {
+		// Serialise to encrypted PKCS#8 PEM using PBES2 (PBKDF2 + AES-256-CBC).
+		// The resulting "BEGIN ENCRYPTED PRIVATE KEY" block is readable by
+		// `openssl pkey -check` and `openssl rsa -check`.
+		der, marshalErr := pkcs8.MarshalPrivateKey(rsaKey, outputPass, nil)
+		if marshalErr != nil {
+			return fmt.Errorf("could not marshal derived key to PKCS#8: %w", marshalErr)
+		}
+		pemBytes = pem.EncodeToMemory(&pem.Block{
+			Type:  "ENCRYPTED PRIVATE KEY",
+			Bytes: der,
+		})
+	} else {
+		// Serialise to OpenSSH PEM format with passphrase protection
+		// (bcrypt-pbkdf key derivation — the modern SSH default).
+		pemBlock, marshalErr := ssh.MarshalPrivateKeyWithPassphrase(rsaKey, "", outputPass)
+		if marshalErr != nil {
+			return fmt.Errorf("could not marshal derived key: %w", marshalErr)
+		}
+		pemBytes = pem.EncodeToMemory(pemBlock)
+	}
 
 	// If no --output path was given, warn the user and ask for confirmation before
 	// printing the private key to the console.
