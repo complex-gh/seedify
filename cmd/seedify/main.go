@@ -127,10 +127,10 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-		// --openssl-compatible is only meaningful alongside --to-rsa.
-		if deriveKeyPKCS8 && !deriveKeyToRSA {
-			return errors.New("--openssl-compatible requires --to-rsa")
-		}
+			// --openssl-compatible is only meaningful alongside --to-rsa.
+			if deriveKeyPKCS8 && !deriveKeyToRSA {
+				return errors.New("--openssl-compatible requires --to-rsa")
+			}
 
 			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
 			if deriveKeyToRSA {
