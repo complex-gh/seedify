@@ -105,7 +105,7 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
   seedify ~/.ssh/id_ed25519 --xmr --polyseed-year 2025
   cat ~/.ssh/id_ed25519 | seedify --words 18
   seedify ~/.ssh/id_ed25519 --to-rsa --output ~/.ssh/id_rsa_derived
-  seedify ~/.ssh/id_ed25519 --to-rsa --pkcs8 --output ~/.ssh/id_rsa_derived.pem
+  seedify ~/.ssh/id_ed25519 --to-rsa --openssl-compatible --output ~/.ssh/id_rsa_derived.pem
   seedify ~/.ssh/id_ed25519 --to-dkim --output /etc/opendkim/keys/mail.private
   seedify ~/.ssh/id_ed25519 --to-dkim --dkim-selector mail --dkim-domain example.com --output /etc/opendkim/keys/mail.private`,
 		Args:         cobra.MaximumNArgs(1),
@@ -127,10 +127,10 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				keyPath = args[0]
 			}
 
-			// --pkcs8 is only meaningful alongside --to-rsa.
-			if deriveKeyPKCS8 && !deriveKeyToRSA {
-				return errors.New("--pkcs8 requires --to-rsa")
-			}
+		// --openssl-compatible is only meaningful alongside --to-rsa.
+		if deriveKeyPKCS8 && !deriveKeyToRSA {
+			return errors.New("--openssl-compatible requires --to-rsa")
+		}
 
 			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
 			if deriveKeyToRSA {
@@ -437,7 +437,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
-	rootCmd.PersistentFlags().BoolVar(&deriveKeyPKCS8, "pkcs8", false, "Write an encrypted PKCS#8 PEM file instead of OpenSSH format (used with --to-rsa; compatible with openssl pkey -check)")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyPKCS8, "openssl-compatible", false, "Write an encrypted PKCS#8 PEM file instead of OpenSSH format (used with --to-rsa; compatible with openssl pkey -check)")
 	rootCmd.PersistentFlags().StringVar(&deriveKeyOutput, "output", "", "Output file path for the derived key (used with --to-rsa or --to-dkim)")
 	rootCmd.PersistentFlags().IntVar(&deriveKeyBits, "bits", 4096, "RSA key size in bits (2048, 3072, or 4096); used with --to-rsa or --to-dkim") //nolint:mnd
 	rootCmd.PersistentFlags().StringVar(&deriveKeyDKIMSelector, "dkim-selector", "mail", "DKIM selector name for the DNS TXT record (used with --to-dkim)")
@@ -474,7 +474,7 @@ func birthdayFromYear(year int) uint64 {
 // It parses the source Ed25519 key, derives an RSA key, prompts for a
 // passphrase, and writes the result as either:
 //   - an OpenSSH PEM file (default, passphrase-protected via bcrypt-pbkdf), or
-//   - an encrypted PKCS#8 PEM file when --pkcs8 is set (PBES2/PBKDF2+AES-256-CBC,
+//   - an encrypted PKCS#8 PEM file when --openssl-compatible is set (PBES2/PBKDF2+AES-256-CBC,
 //     readable by `openssl pkey -check` and `openssl rsa -check`).
 //
 //nolint:funlen,cyclop
