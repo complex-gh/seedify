@@ -815,13 +815,13 @@ func runDerivePGPKey(keyPath string) error {
 	}
 	isPrimary := true
 	uidSig := &packet.Signature{
-		Version:           primaryPrivPkt.PublicKey.Version,
+		Version:           primaryPrivPkt.Version,
 		SigType:           packet.SigTypePositiveCert,
-		PubKeyAlgo:        primaryPrivPkt.PublicKey.PubKeyAlgo,
+		PubKeyAlgo:        primaryPrivPkt.PubKeyAlgo,
 		Hash:              crypto.SHA256,
 		CreationTime:      pgpPair.CreationTime,
-		IssuerKeyId:       &primaryPrivPkt.PublicKey.KeyId,
-		IssuerFingerprint: primaryPrivPkt.PublicKey.Fingerprint,
+		IssuerKeyId:       &primaryPrivPkt.KeyId,
+		IssuerFingerprint: primaryPrivPkt.Fingerprint,
 		FlagsValid:        true,
 		FlagSign:          true,
 		FlagCertify:       true,
@@ -840,19 +840,18 @@ func runDerivePGPKey(keyPath string) error {
 	// Build the encryption subkey packet from the second derived RSA key.
 	encryptPrivPkt := packet.NewRSAPrivateKey(pgpPair.CreationTime, pgpPair.EncryptSubkey)
 	encryptPrivPkt.IsSubkey = true
-	encryptPrivPkt.PublicKey.IsSubkey = true
 
 	subkeySig := &packet.Signature{
-		Version:                    primaryPrivPkt.PublicKey.Version,
-		SigType:                    packet.SigTypeSubkeyBinding,
-		PubKeyAlgo:                 primaryPrivPkt.PublicKey.PubKeyAlgo,
-		Hash:                       crypto.SHA256,
-		CreationTime:               pgpPair.CreationTime,
-		IssuerKeyId:                &primaryPrivPkt.PublicKey.KeyId,
-		IssuerFingerprint:          primaryPrivPkt.PublicKey.Fingerprint,
-		FlagsValid:                 true,
-		FlagEncryptStorage:         true,
-		FlagEncryptCommunications:  true,
+		Version:                   primaryPrivPkt.Version,
+		SigType:                   packet.SigTypeSubkeyBinding,
+		PubKeyAlgo:                primaryPrivPkt.PubKeyAlgo,
+		Hash:                      crypto.SHA256,
+		CreationTime:              pgpPair.CreationTime,
+		IssuerKeyId:               &primaryPrivPkt.KeyId,
+		IssuerFingerprint:         primaryPrivPkt.Fingerprint,
+		FlagsValid:                true,
+		FlagEncryptStorage:        true,
+		FlagEncryptCommunications: true,
 	}
 	if subkeyErr := subkeySig.SignKey(&encryptPrivPkt.PublicKey, primaryPrivPkt, nil); subkeyErr != nil {
 		return fmt.Errorf("could not bind PGP encryption subkey: %w", subkeyErr)
