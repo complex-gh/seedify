@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -46,6 +47,7 @@ import (
 	"github.com/tyler-smith/go-bip39"
 	"github.com/tyler-smith/go-bip39/wordlists"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/sha3"
 )
 
 // Constants for mnemonic generation.
@@ -3238,4 +3240,109 @@ func DeriveSuiAddress(mnemonic string, bip39Passphrase string) (string, error) {
 	hash := blake2b.Sum256(payload)
 
 	return fmt.Sprintf("0x%s", hex.EncodeToString(hash[:])), nil
+}
+
+// torOnionVersion is the Tor v3 hidden service version byte used in the onion
+// address checksum and encoding.
+const torOnionVersion = byte(0x03)
+
+// torSecretKeyHeader is the 32-byte magic prefix Tor expects at the start of
+// every hs_ed25519_secret_key file (29 ASCII chars + 3 NUL padding bytes).
+const torSecretKeyHeader = "== ed25519v1-secret: type0 ==\x00\x00\x00"
+
+// torPublicKeyHeader is the 32-byte magic prefix Tor expects at the start of
+// every hs_ed25519_public_key file (29 ASCII chars + 3 NUL padding bytes).
+const torPublicKeyHeader = "== ed25519v1-public: type0 ==\x00\x00\x00"
+
+// OnionServiceKeys holds all the material needed to deploy a Tor v3 hidden
+// service derived from an Ed25519 SSH key.
+type OnionServiceKeys struct {
+	// OnionAddress is the 56-character v3 .onion hostname, e.g.
+	// "xyz...xyz.onion". This is the public identity of the hidden service.
+	OnionAddress string
+
+	// PrivateKeyFile is the binary content to write as hs_ed25519_secret_key
+	// (96 bytes: 32-byte Tor header + 64-byte expanded Ed25519 private key).
+	PrivateKeyFile []byte
+
+	// PublicKeyFile is the binary content to write as hs_ed25519_public_key
+	// (64 bytes: 32-byte Tor header + 32-byte Ed25519 public key).
+	PublicKeyFile []byte
+
+	// HostnameFile is the content to write as hostname (onion address + "\n").
+	HostnameFile []byte
+}
+
+// DeriveOnionServiceKeys deterministically derives a Tor v3 hidden service
+// identity from an Ed25519 SSH private key.
+//
+// Derivation follows the same domain-separation pattern used throughout this
+// package: a 32-byte sub-seed is produced by SHA-256("seedify:tor:v3:" ||
+// key.Seed()), then an Ed25519 sub-key is created from that sub-seed. The
+// sub-key is independent of all other derived keys (RSA, DKIM, PGP) because
+// each uses a distinct label.
+//
+// The returned OnionServiceKeys contains:
+//   - OnionAddress: the 56-char v3 .onion hostname (ready to share publicly)
+//   - PrivateKeyFile: write to <HiddenServiceDir>/hs_ed25519_secret_key
+//   - PublicKeyFile: write to <HiddenServiceDir>/hs_ed25519_public_key
+//   - HostnameFile: write to <HiddenServiceDir>/hostname
+//
+// Security note: the derived hidden service key is cryptographically linked to
+// the source SSH key. Compromising either compromises both.
+func DeriveOnionServiceKeys(key *ed25519.PrivateKey) (*OnionServiceKeys, error) {
+	// Domain-separate the source key seed so the Tor sub-key is independent of
+	// all other sub-keys derived by seedify (RSA, DKIM, PGP, etc.).
+	label := []byte("seedify:tor:v3:")
+	input := make([]byte, len(label)+len(key.Seed()))
+	copy(input, label)
+	copy(input[len(label):], key.Seed())
+	subSeed := sha256.Sum256(input)
+
+	// Derive the hidden service Ed25519 key pair from the sub-seed.
+	torPrivKey := ed25519.NewKeyFromSeed(subSeed[:])
+	pubKey := torPrivKey.Public().(ed25519.PublicKey)
+
+	// Compute the "expanded" 64-byte private key that Tor stores in
+	// hs_ed25519_secret_key. This is the standard Ed25519 key expansion from
+	// RFC 8032: SHA-512 of the seed with three bits clamped.
+	expandedArr := sha512.Sum512(subSeed[:])
+	expandedArr[0] &= 248  //nolint:mnd // clear lowest 3 bits (cofactor)
+	expandedArr[31] &= 127 //nolint:mnd // clear highest bit
+	expandedArr[31] |= 64  //nolint:mnd // set second-highest bit
+
+	// Compute the v3 onion address checksum.
+	// Per the Tor spec (rend-spec-v3.txt §6):
+	//   checksum = SHA3-256(".onion checksum" || pubkey || version)[:2]
+	//   onion    = base32lower(pubkey || checksum || version) + ".onion"
+	checksumInput := make([]byte, 0, 15+ed25519.PublicKeySize+1) //nolint:mnd
+	checksumInput = append(checksumInput, []byte(".onion checksum")...)
+	checksumInput = append(checksumInput, pubKey...)
+	checksumInput = append(checksumInput, torOnionVersion)
+	checksumHash := sha3.Sum256(checksumInput)
+
+	// Assemble the 35-byte payload for base32 encoding (56 chars, no padding).
+	addrBytes := make([]byte, 0, ed25519.PublicKeySize+2+1) //nolint:mnd
+	addrBytes = append(addrBytes, pubKey...)
+	addrBytes = append(addrBytes, checksumHash[:2]...)
+	addrBytes = append(addrBytes, torOnionVersion)
+
+	onionAddr := strings.ToLower(base32.StdEncoding.EncodeToString(addrBytes)) + ".onion"
+
+	// Build the hs_ed25519_secret_key file: 32-byte header + 64-byte expanded key.
+	privFile := make([]byte, 0, len(torSecretKeyHeader)+len(expandedArr))
+	privFile = append(privFile, []byte(torSecretKeyHeader)...)
+	privFile = append(privFile, expandedArr[:]...)
+
+	// Build the hs_ed25519_public_key file: 32-byte header + 32-byte public key.
+	pubFile := make([]byte, 0, len(torPublicKeyHeader)+ed25519.PublicKeySize)
+	pubFile = append(pubFile, []byte(torPublicKeyHeader)...)
+	pubFile = append(pubFile, pubKey...)
+
+	return &OnionServiceKeys{
+		OnionAddress:   onionAddr,
+		PrivateKeyFile: privFile,
+		PublicKeyFile:  pubFile,
+		HostnameFile:   []byte(onionAddr + "\n"),
+	}, nil
 }

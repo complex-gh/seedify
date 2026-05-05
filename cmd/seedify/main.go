@@ -72,6 +72,7 @@ var (
 	// derive-key flags.
 	deriveKeyToRSA        bool
 	deriveKeyToDKIM       bool
+	deriveKeyToOnion      bool
 	deriveKeyPKCS8        bool
 	deriveKeyToPGP        bool
 	deriveKeyPGPName      string
@@ -145,12 +146,22 @@ with a space. Check your HISTCONTROL or HIST_IGNORE_SPACE settings.`,
 				return errors.New("--to-pgp cannot be combined with --to-rsa or --to-dkim")
 			}
 
+			// --to-onion is mutually exclusive with all other derivation modes.
+			if deriveKeyToOnion && (deriveKeyToRSA || deriveKeyToDKIM || deriveKeyToPGP) {
+				return errors.New("--to-onion cannot be combined with --to-rsa, --to-dkim, or --to-pgp")
+			}
+
 			// --pgp-name and --pgp-email are both required when --to-pgp is set.
 			if deriveKeyToPGP && deriveKeyPGPName == "" {
 				return errors.New("--pgp-name is required with --to-pgp")
 			}
 			if deriveKeyToPGP && deriveKeyPGPEmail == "" {
 				return errors.New("--pgp-email is required with --to-pgp")
+			}
+
+			// Handle --to-onion: derive a Tor v3 hidden service identity from the Ed25519 key.
+			if deriveKeyToOnion {
+				return runDeriveOnionKey(keyPath)
 			}
 
 			// Handle --to-rsa: derive an RSA key from the Ed25519 key and write to disk (or stdout).
@@ -463,6 +474,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&polyseedYear, "polyseed-year", "", "Override polyseed year (YYYY). Default: current year")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToRSA, "to-rsa", false, "Derive an RSA key from the input Ed25519 key and write it to --output")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToDKIM, "to-dkim", false, "Derive a DKIM RSA keypair from the input Ed25519 key and write private key to --output")
+	rootCmd.PersistentFlags().BoolVar(&deriveKeyToOnion, "to-onion", false, "Derive a Tor v3 hidden service identity from the input Ed25519 key; use --output <dir> to write the Tor key files")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyPKCS8, "openssl-compatible", false, "Write an encrypted PKCS#8 PEM file instead of OpenSSH format (used with --to-rsa; compatible with openssl pkey -check)")
 	rootCmd.PersistentFlags().BoolVar(&deriveKeyToPGP, "to-pgp", false, "Derive an OpenPGP RSA keypair and write an ASCII-armored secret key (.asc) to --output")
 	rootCmd.PersistentFlags().StringVar(&deriveKeyPGPName, "pgp-name", "", "Full name for the OpenPGP UID, e.g. Alice (used with --to-pgp)")
@@ -713,6 +725,91 @@ func runDeriveDKIMKey(keyPath string) error {
 	fmt.Fprintln(os.Stderr, "      255-character chunks. Check your provider's documentation if")
 	fmt.Fprintln(os.Stderr, "      the record is rejected. For a 4096-bit key the value is ~736")
 	fmt.Fprintln(os.Stderr, "      characters; for 2048-bit it is ~392 characters.")
+
+	return nil
+}
+
+// runDeriveOnionKey handles --to-onion: derives a Tor v3 hidden service identity
+// from the source Ed25519 key and either writes the three Tor key files to a
+// directory (when --output <dir> is given) or prints only the .onion address to
+// stdout.
+//
+// The three files written when --output is set are:
+//   - <dir>/hs_ed25519_secret_key  (96 bytes, permissions 0600)
+//   - <dir>/hs_ed25519_public_key  (64 bytes, permissions 0600)
+//   - <dir>/hostname               (the .onion address + newline)
+//
+// These match the layout Tor expects for a HiddenServiceDir; copy the
+// directory to your Tor data path and add the corresponding HiddenServiceDir
+// line to your torrc.
+func runDeriveOnionKey(keyPath string) error {
+	f, err := openFileOrStdin(keyPath)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck
+
+	bts, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("could not read key: %w", err)
+	}
+
+	key, err := parsePrivateKey(bts, nil)
+	if err != nil && isPasswordError(err) {
+		pass, passErr := askKeyPassphrase(keyPath)
+		if passErr != nil {
+			return passErr
+		}
+		key, err = parsePrivateKey(bts, pass)
+		if err != nil {
+			return fmt.Errorf("could not parse key with passphrase: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("could not parse key: %w", err)
+	}
+
+	ed25519Key, ok := key.(*ed25519.PrivateKey)
+	if !ok {
+		return unsupportedKeyTypeError(key)
+	}
+
+	onionKeys, deriveErr := seedify.DeriveOnionServiceKeys(ed25519Key)
+	if deriveErr != nil {
+		return fmt.Errorf("could not derive Tor v3 hidden service keys: %w", deriveErr)
+	}
+
+	// When no --output directory is given, just print the .onion address.
+	if deriveKeyOutput == "" {
+		fmt.Println(onionKeys.OnionAddress)
+		return nil
+	}
+
+	// Create the output directory with restrictive permissions (owner only).
+	if mkdirErr := os.MkdirAll(deriveKeyOutput, 0o700); mkdirErr != nil { //nolint:mnd
+		return fmt.Errorf("could not create output directory %s: %w", deriveKeyOutput, mkdirErr)
+	}
+
+	secretKeyPath := filepath.Join(deriveKeyOutput, "hs_ed25519_secret_key")
+	publicKeyPath := filepath.Join(deriveKeyOutput, "hs_ed25519_public_key")
+	hostnamePath := filepath.Join(deriveKeyOutput, "hostname")
+
+	if writeErr := os.WriteFile(secretKeyPath, onionKeys.PrivateKeyFile, 0o600); writeErr != nil { //nolint:mnd
+		return fmt.Errorf("could not write %s: %w", secretKeyPath, writeErr)
+	}
+	if writeErr := os.WriteFile(publicKeyPath, onionKeys.PublicKeyFile, 0o600); writeErr != nil { //nolint:mnd
+		return fmt.Errorf("could not write %s: %w", publicKeyPath, writeErr)
+	}
+	if writeErr := os.WriteFile(hostnamePath, onionKeys.HostnameFile, 0o644); writeErr != nil { //nolint:mnd
+		return fmt.Errorf("could not write %s: %w", hostnamePath, writeErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nWARNING: The derived Tor key is cryptographically linked to its source key.\n")
+	fmt.Fprintf(os.Stderr, "         Compromising either key compromises both.\n\n")
+	fmt.Fprintf(os.Stderr, "Onion address: %s\n", onionKeys.OnionAddress)
+	fmt.Fprintf(os.Stderr, "Files written to: %s\n", deriveKeyOutput)
+	fmt.Fprintf(os.Stderr, "  %s\n", secretKeyPath)
+	fmt.Fprintf(os.Stderr, "  %s\n", publicKeyPath)
+	fmt.Fprintf(os.Stderr, "  %s\n", hostnamePath)
 
 	return nil
 }
