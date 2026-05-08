@@ -799,7 +799,7 @@ func runDeriveOnionKey(keyPath string) error {
 	if writeErr := os.WriteFile(publicKeyPath, onionKeys.PublicKeyFile, 0o600); writeErr != nil { //nolint:mnd
 		return fmt.Errorf("could not write %s: %w", publicKeyPath, writeErr)
 	}
-	if writeErr := os.WriteFile(hostnamePath, onionKeys.HostnameFile, 0o644); writeErr != nil { //nolint:mnd
+	if writeErr := os.WriteFile(hostnamePath, onionKeys.HostnameFile, 0o600); writeErr != nil { //nolint:mnd
 		return fmt.Errorf("could not write %s: %w", hostnamePath, writeErr)
 	}
 
